@@ -4,9 +4,9 @@ Utilities for local checking of author conflicts.
 
 ## Description
 
-- `refresh_rdf_cache.pl` checks whether `dblp.rdf.gz` exists locally and is not more than 14 days older than the online version. If not, the current file is downloaded.
-- `ponder_dblp.pl` reads the local `dblp.rdf.gz` and extracts all InProceedings and Articles along with their authors, putting a concise version of the data in local csv files. This takes about an hour and reduces the raw data size from 33+GB to ~1.5GB
-- `query_dblp.ipynb` Jupyter notebook for searching co-authors within a given threshold in years. Reads the csv files from the `snapshot/` folder!
+- `refresh_rdf_cache.pl` checks whether `dblp.rdf.gz` exists locally and is not more than 14 days older than the online version. If not, the current file is downloaded. Files are put in `./`.
+- `ponder_dblp.pl` reads the local `dblp.rdf.gz` and extracts all InProceedings and Articles along with their authors, putting a concise version of the data in local csv files. This takes about an hour and reduces the raw data size from 33+GB to ~1.5GB. The CSVs are put in `./`. You have to overwrite the snapshot manually and **intentionally** for now (see below).
+- `query_dblp.ipynb` Jupyter notebook for searching co-authors within a given threshold in years. **Reads the csv files from the `./snapshot/` folder!**
 
 ## Local files
 - `dblp.rdf.gz` the database fetched from DBLP
