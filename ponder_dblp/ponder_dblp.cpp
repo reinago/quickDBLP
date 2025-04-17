@@ -12,6 +12,12 @@
 #include <boost/iostreams/device/file.hpp>
 #include <boost/iostreams/device/file_descriptor.hpp>
 
+#include "ThreadSafeIDGenerator.hpp"
+#include "InMemDB.hpp"
+#include "ThreadPool.hpp"
+
+//#define USE_THREAD_POOL 1
+
 // Utility functions for logging
 enum class LogLevel { None, Error, Warning, Info };
 LogLevel printLevel = LogLevel::Warning;
@@ -34,36 +40,45 @@ void printError(const std::string& msg) {
 	}
 }
 
+
+
 // Global variables
-std::unordered_map<std::string, int> papersToNumbers;
-std::unordered_map<std::string, int> authorsToNumbers;
-int maxPaperNumber = 1;
-int maxAuthorNumber = 1;
+//std::unordered_map<std::string, int> papersToNumbers;
+//int maxPaperNumber = 1;
 
-//std::vector<std::tuple<std::string, std::string, std::string>> currCreators;
-//std::vector<std::string> currAuthors;
-//std::string currPaperID;
-//std::string currTitle;
-//int currYear = 0;
+//std::unordered_map<std::string, int> authorsToNumbers;
+//int maxAuthorNumber = 1;
+ThreadSafeIDGenerator<uint32_t> authorsToNumbers;
+struct Author {
+	std::string id;
+	std::string orcid;
+	std::string name;
+};
+InMemDB<uint32_t, Author> authorDB;
 
-// File streams
-std::ofstream papersFile("dblp_papers.csv");
-std::ofstream authorsFile("dblp_authors.csv");
-std::ofstream papersAuthorsFile("dblp_papers_authors.csv");
+ThreadSafeIDGenerator<uint32_t> papersToNumbers;
+struct Paper {
+	std::string id;
+	std::string title;
+	int year;
+};
+InMemDB<uint32_t, Paper> paperDB;
+
+LinkDB<uint32_t> papersAndAuthorsDB;
 
 // Helper functions
 int checkAuthor(const std::string& authorID, const std::string& authorOrcid, const std::string& authorName) {
-	if (authorsToNumbers.find(authorID) != authorsToNumbers.end()) {
-		printInfo("Found author ID: " + authorID);
-		return authorsToNumbers[authorID];
-	} else {
-		printInfo("New author ID: " + authorID);
-		int realID = maxAuthorNumber++;
-		authorsToNumbers[authorID] = realID;
+	auto res = authorsToNumbers.getOrCreateID(authorID);
+	int realID = std::get<0>(res);
+	if (std::get<1>(res)) {
+		// New author, add to the database
+		authorDB.storeItem(realID, { authorID, authorOrcid, authorName });
 		printInfo("Assigned number " + std::to_string(realID) + " to author ID " + authorID);
-		authorsFile << realID << "\t" << authorID << "\t" << authorName << "\t" << authorOrcid << "\n";
-		return realID;
+	} else {
+		// Existing author
+		printInfo("Existing author found: " + authorID);
 	}
+	return realID;
 }
 
 int processPaperBuffer(std::vector<std::string> buf) {
@@ -78,6 +93,7 @@ int processPaperBuffer(std::vector<std::string> buf) {
 	std::vector<std::tuple<std::string, std::string, std::string>> currCreators;
 	std::vector<std::string> currAuthors;
 	std::string currPaperID;
+	uint32_t currPaperNumericID = 0;
 	std::string currTitle;
 	int currYear = 0;
 	std::string authorID, authorOrcid, authorName;
@@ -91,8 +107,9 @@ int processPaperBuffer(std::vector<std::string> buf) {
 			if (std::regex_search(line, match, idRegex)) {
 				currPaperID = match[1];
 				printInfo("Current ID: " + currPaperID);
-				papersToNumbers[currPaperID] = maxPaperNumber++;
-				printInfo("Assigned number " + std::to_string(maxPaperNumber - 1) + " to paper ID " + currPaperID);
+				auto res = papersToNumbers.getOrCreateID(currPaperID);
+				currPaperNumericID = std::get<0>(res);
+				printInfo("Assigned number " + std::to_string(currPaperNumericID) + " to paper ID " + currPaperID);
 			} else {
 				printError("No ID found in entry: " + line);
 			}
@@ -104,10 +121,12 @@ int processPaperBuffer(std::vector<std::string> buf) {
 			} else {
 				for (const auto& [authorID, authorOrcid, authorName] : currCreators) {
 					int realID = checkAuthor(authorID, authorOrcid, authorName);
-					papersAuthorsFile << maxPaperNumber - 1 << "\t" << realID << "\n";
+					//papersAuthorsFile << maxPaperNumber - 1 << "\t" << realID << "\n";
+					papersAndAuthorsDB.storeLink(currPaperNumericID, realID);
 				}
 			}
-			papersFile << maxPaperNumber - 1 << "\t" << currPaperID << "\t" << currTitle << "\t" << currYear << "\n";
+			paperDB.storeItem(currPaperNumericID, { currPaperID, currTitle, currYear });
+			//papersFile << maxPaperNumber - 1 << "\t" << currPaperID << "\t" << currTitle << "\t" << currYear << "\n";
 		} else {
 			// analyze the paper entry
 			std::smatch match;
@@ -143,11 +162,36 @@ int processPaperBuffer(std::vector<std::string> buf) {
 	return 0;
 }
 
-int main() {
+void dumpData() {
+	// File streams
+	std::ofstream papersFile("dblp_papers.csv");
+	std::ofstream authorsFile("dblp_authors.csv");
+	std::ofstream papersAuthorsFile("dblp_papers_authors.csv");
+
 	// Initialize files
 	papersFile << "NumericID\tDBLP\tTitle\tYear\n";
 	authorsFile << "NumericID\tDBLP\tName\tORCID\n";
 	papersAuthorsFile << "PaperID\tAuthorID\n";
+
+	for (uint32_t p = 1; p < papersToNumbers.getMaxID(); ++p) {
+		auto paper = paperDB.getItem(p);
+		papersFile << p << "\t" << paper.id << "\t" << paper.title << "\t" << paper.year << "\n";
+	}
+	for (uint32_t a = 1; a < authorsToNumbers.getMaxID(); ++a) {
+		auto author = authorDB.getItem(a);
+		authorsFile << a << "\t" << author.id << "\t" << author.name << "\t" << author.orcid << "\n";
+	}
+	for (auto it = papersAndAuthorsDB.begin(); it != papersAndAuthorsDB.end(); ++it) {
+		papersAuthorsFile << it->first << "\t" << it->second << "\n";
+	}
+
+	// Close files
+	papersFile.close();
+	authorsFile.close();
+	papersAuthorsFile.close();
+}
+
+int main() {
 
 	try {
 		// Open gzipped input file using Boost.Iostreams
@@ -155,16 +199,13 @@ int main() {
 		inputFile.push(boost::iostreams::gzip_decompressor());
 		inputFile.push(boost::iostreams::file_descriptor("dblp.rdf.gz"));
 
-		if (!inputFile) {
-			printError("Could not open input file.");
-			return 1;
-		}
-
+		ThreadPool threadPool(std::thread::hardware_concurrency() * 2);
 
 		// Process file
 		std::string line;
 		int state = 0; // 0 = searching, 1 = inproceedings, 3 = article
 		std::vector<std::string> paperBuffer;
+		std::cout << "Processing database dump..." << std::endl;
 		while (std::getline(inputFile, line)) {
 			if (state == 0) {
 				if (line.find("<dblp:Inproceedings") != std::string::npos) {
@@ -172,34 +213,37 @@ int main() {
 					printInfo("Found Inproceedings entry");
 					paperBuffer.clear();
 					paperBuffer.push_back(line);
-					// addPaper(line);
 				} else if (line.find("<dblp:Article") != std::string::npos) {
 					state = 3;
 					printInfo("Found Article entry");
 					paperBuffer.clear();
 					paperBuffer.push_back(line);
-					// addPaper(line);
 				}
 			} else {
 				paperBuffer.push_back(line);
 				if (state == 1 && line.find("</dblp:Inproceedings") != std::string::npos) {
 					state = 0;
 					printInfo("End of Inproceedings entry");
+#ifdef USE_THREAD_POOL
+					threadPool.enqueue([paperBuffer]() { processPaperBuffer(paperBuffer); });
+#else
 					processPaperBuffer(paperBuffer);
-					// finalizePaper();
+#endif
 				} else if (state == 3 && line.find("</dblp:Article") != std::string::npos) {
 					state = 0;
 					printInfo("End of Article entry");
+#ifdef USE_THREAD_POOL
+					threadPool.enqueue([paperBuffer]() { processPaperBuffer(paperBuffer); });
+#else
 					processPaperBuffer(paperBuffer);
-					// finalizePaper();
+#endif
 				}
 			}
 		}
-
-		// Close files
-		papersFile.close();
-		authorsFile.close();
-		papersAuthorsFile.close();
+		std::cout << "Waiting for threads to finish parsing..." << std::endl;
+		threadPool.waitForAll();
+		std::cout << "saving CSVs..." << std::endl;
+		dumpData();
 	} catch (const std::exception& e) {
 		printError("Exception: " + std::string(e.what()));
 		return 1;

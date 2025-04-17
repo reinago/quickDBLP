@@ -46,7 +46,7 @@ find_package(boost_iostreams CONFIG REQUIRED)
 
 add_executable(ponder_dblp "${CMAKE_CURRENT_SOURCE_DIR}/ponder_dblp.cpp")
 
-#target_include_directories(ponder_dblp PRIVATE Boost::iostreams)
+target_include_directories(ponder_dblp PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 # target_link_directories(starsurvey PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/lib")
 target_link_libraries(ponder_dblp PRIVATE Boost::iostreams)
 # add_custom_command(
