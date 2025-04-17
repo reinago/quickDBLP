@@ -16,7 +16,10 @@
 #include "InMemDB.hpp"
 #include "ThreadPool.hpp"
 
-//#define USE_THREAD_POOL 1
+// TODO
+// profile the code
+// is it better collect everything per thread and merge afterward? ID merging would be a headache
+#define USE_THREAD_POOL 1
 
 // Utility functions for logging
 enum class LogLevel { None, Error, Warning, Info };
@@ -40,14 +43,6 @@ void printError(const std::string& msg) {
 	}
 }
 
-
-
-// Global variables
-//std::unordered_map<std::string, int> papersToNumbers;
-//int maxPaperNumber = 1;
-
-//std::unordered_map<std::string, int> authorsToNumbers;
-//int maxAuthorNumber = 1;
 ThreadSafeIDGenerator<uint32_t> authorsToNumbers;
 struct Author {
 	std::string id;
@@ -121,12 +116,10 @@ int processPaperBuffer(std::vector<std::string> buf) {
 			} else {
 				for (const auto& [authorID, authorOrcid, authorName] : currCreators) {
 					int realID = checkAuthor(authorID, authorOrcid, authorName);
-					//papersAuthorsFile << maxPaperNumber - 1 << "\t" << realID << "\n";
 					papersAndAuthorsDB.storeLink(currPaperNumericID, realID);
 				}
 			}
 			paperDB.storeItem(currPaperNumericID, { currPaperID, currTitle, currYear });
-			//papersFile << maxPaperNumber - 1 << "\t" << currPaperID << "\t" << currTitle << "\t" << currYear << "\n";
 		} else {
 			// analyze the paper entry
 			std::smatch match;
