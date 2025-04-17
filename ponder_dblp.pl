@@ -8,7 +8,7 @@ use warnings;
 # open dblp.rdf
 my $dblp_file = 'dblp.rdf.gz';
 # open my $fh, '<:gzip', $dblp_file or die "Could not open file '$dblp_file' $!";
-my $fh = IO::Uncompress::Gunzip->new($dblp_file) or die "IO::Uncompress::Gunzip failed: $GunzipError\n";
+my $fh = IO::Uncompress::Gunzip->new($dblp_file, BlockSize => 16777216) or die "IO::Uncompress::Gunzip failed: $GunzipError\n";
 
 open my $papers_fh, '>', 'dblp_papers.csv' or die "Could not open file 'dblp_papers.csv' $!";
 print $papers_fh "NumericID\tDBLP\tTitle\tYear\n";
@@ -194,32 +194,6 @@ while (my $line = <$fh>) {
             printInfo "Found Article entry\n";
             addPaper($line);
         }
-        # elsif (index($line, "<dblp:Person") != -1) {
-        #     $state = 2;
-        #     printInfo "Found Person entry\n";
-        #     $line =~ /rdf:about="([^"]+)"/;
-        #     if ($1) {
-        #         $currID = $1;
-        #         printInfo "Current ID: $currID\n";
-        #         $authorsToNumbers{$currID} = $maxAuthorNumber;
-        #         $currAuthorNumber = $maxAuthorNumber;
-        #         $maxAuthorNumber++;
-        #         printInfo "Assigned number $authorsToNumbers{$currID} to author ID $currID\n";
-        #     } else {
-        #         printError "No ID found in Person entry\n";
-        #     }
-        # }
-
-        # elsif ($line =~ /<dblp:informal/) {
-        #     $state = 4;
-        #     print "Found Informal entry\n";
-        # } elsif ($line =~ /<dblp:repository/) {
-        #     $state = 5;
-        #     print "Found Repository entry\n";
-        # } elsif ($line =~ /<dblp:reference/) {
-        #     $state = 6;
-        #     print "Found Reference entry\n";
-        # }
     }
 
     if ($state == 1) {
@@ -240,27 +214,7 @@ while (my $line = <$fh>) {
             processPaperContent($line);
         }
     }
-    # if ($state == 2) {
-    #     if (index($line, "<\/dblp:Person") != -1) {
-    #         $state = 0;
-    #         printInfo "End of Person entry\n";
-    #         print $authors_fh "$currAuthorNumber\t$currID\t$currName\n";
-    #     } elsif ($line =~ /^<dblp:primaryCreatorName>([^<]+)<\/dblp:primaryCreatorName>/) {
-    #         $currName = $1;
-    #         printInfo "Current Author Name: $currName\n";
-    #     }
-    # }
 }
-
-# now clean up the author-paper relations
-# foreach my $entry (@authorsAndPapers) {
-#     my ($paperID, $authorID) = @$entry;
-#     if (exists $authorsToNumbers{$authorID}) {
-#         print $papers_authors_fh "$paperID\t$authorsToNumbers{$authorID}\n";
-#     } else {
-#         printError "Author ID not found in hash: $authorID\n";
-#     }
-# }
 
 close $fh;
 close $papers_fh;
