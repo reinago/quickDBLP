@@ -2,7 +2,18 @@
 
 Utilities for local checking of author conflicts. The Jupyter notebook depends on `pandas`, `lxml`, and `itables`, the python cache fetcher on `requests`.
 
-TL;DR: `pip install pandas lxml itables requests`.
+## TL;DR:
+```
+pip install pandas lxml itables requests
+python refresh_rdf_cache.py
+cd ponder_dblp
+cmake --preset=x64-release
+cmake --build --preset=x64-release
+cd ..
+ponder_dblp\out\build\x64-release\ponder_dblp.exe
+move *.csv snapshot
+```
+open and run `query_dblp.ipynb`
 
 ## Description
 
