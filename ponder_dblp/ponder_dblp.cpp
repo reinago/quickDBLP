@@ -17,6 +17,9 @@
 #include "InMemDB.hpp"
 #include "ThreadPool.hpp"
 
+// TODO
+// profile the code
+// is it better collect everything per thread and merge afterward? ID merging would be a headache
 #define USE_THREAD_POOL 1
 
 // Utility functions for logging
@@ -115,12 +118,10 @@ int processPaperBuffer(std::vector<std::string> buf) {
 			} else {
 				for (const auto& [authorID, authorOrcid, authorName] : currCreators) {
 					int realID = checkAuthor(authorID, authorOrcid, authorName);
-					//papersAuthorsFile << maxPaperNumber - 1 << "\t" << realID << "\n";
 					papersAndAuthorsDB.storeLink(currPaperNumericID, realID);
 				}
 			}
 			paperDB.storeItem(currPaperNumericID, { currPaperID, currTitle, currYear });
-			//papersFile << maxPaperNumber - 1 << "\t" << currPaperID << "\t" << currTitle << "\t" << currYear << "\n";
 		} else {
 			// analyze the paper entry
 			if (std::regex_search(line, match, titleRegex)) {
