@@ -1,4 +1,5 @@
 #include <iostream>
+#include <iomanip>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -16,7 +17,7 @@
 #include "InMemDB.hpp"
 #include "ThreadPool.hpp"
 
-//#define USE_THREAD_POOL 1
+#define USE_THREAD_POOL 1
 
 // Utility functions for logging
 enum class LogLevel { None, Error, Warning, Info };
@@ -40,14 +41,6 @@ void printError(const std::string& msg) {
 	}
 }
 
-
-
-// Global variables
-//std::unordered_map<std::string, int> papersToNumbers;
-//int maxPaperNumber = 1;
-
-//std::unordered_map<std::string, int> authorsToNumbers;
-//int maxAuthorNumber = 1;
 ThreadSafeIDGenerator<uint32_t> authorsToNumbers;
 struct Author {
 	std::string id;
@@ -60,7 +53,7 @@ ThreadSafeIDGenerator<uint32_t> papersToNumbers;
 struct Paper {
 	std::string id;
 	std::string title;
-	int year;
+	int year = 0;
 };
 InMemDB<uint32_t, Paper> paperDB;
 
@@ -90,6 +83,8 @@ int processPaperBuffer(std::vector<std::string> buf) {
 	static std::regex signatureOrcidRegex(R"q(<dblp:signatureOrcid rdf:resource="([^"]+)")q");
 	static std::regex signatureNameRegex(R"q(<dblp:signatureDblpName>([^<]+)</dblp:signatureDblpName>)q");
 
+	std::smatch match;
+
 	std::vector<std::tuple<std::string, std::string, std::string>> currCreators;
 	std::vector<std::string> currAuthors;
 	std::string currPaperID;
@@ -103,7 +98,6 @@ int processPaperBuffer(std::vector<std::string> buf) {
 	for (const auto& line : buf) {
 		if (line.find("<dblp:Inproceedings") != std::string::npos || line.find("<dblp:Article") != std::string::npos) {
 			// started a paper entry
-			std::smatch match;
 			if (std::regex_search(line, match, idRegex)) {
 				currPaperID = match[1];
 				printInfo("Current ID: " + currPaperID);
@@ -129,7 +123,6 @@ int processPaperBuffer(std::vector<std::string> buf) {
 			//papersFile << maxPaperNumber - 1 << "\t" << currPaperID << "\t" << currTitle << "\t" << currYear << "\n";
 		} else {
 			// analyze the paper entry
-			std::smatch match;
 			if (std::regex_search(line, match, titleRegex)) {
 				currTitle = match[1];
 				printInfo("Current Title: " + currTitle);
@@ -191,13 +184,38 @@ void dumpData() {
 	papersAuthorsFile.close();
 }
 
+void checkProgress(uint64_t current, uint64_t total) {
+	static uint64_t lastProgress = 0;
+	const int barWidth = 70;
+
+	if (current - lastProgress > 10000000) {
+		auto progress = static_cast<float>(current) / total;
+		std::cout << "[";
+		int pos = barWidth * progress;
+		for (int i = 0; i < barWidth; ++i) {
+			if (i < pos) std::cout << "=";
+			else if (i == pos) std::cout << ">";
+			else std::cout << " ";
+		}
+		std::cout << "] " << std::setfill(' ') << std::setw(3) << int(progress * 100.0) << " %\r";
+		std::cout.flush();
+
+		lastProgress = current;
+	}
+}
+
 int main() {
 
 	try {
 		// Open gzipped input file using Boost.Iostreams
 		boost::iostreams::filtering_istream inputFile;
 		inputFile.push(boost::iostreams::gzip_decompressor());
-		inputFile.push(boost::iostreams::file_descriptor("dblp.rdf.gz"));
+		auto fd = boost::iostreams::file_descriptor("dblp.rdf.gz");
+		inputFile.push(fd);
+
+		auto fd2 = boost::iostreams::file_descriptor("dblp.rdf.gz");
+		fd2.seek(0, std::ios::end);
+		std::streampos fileSize = fd2.seek(0, std::ios::cur);
 
 		ThreadPool threadPool(std::thread::hardware_concurrency() * 2);
 
@@ -207,6 +225,8 @@ int main() {
 		std::vector<std::string> paperBuffer;
 		std::cout << "Processing database dump..." << std::endl;
 		while (std::getline(inputFile, line)) {
+			std::streampos pos = fd.seek(0, std::ios::cur);
+			checkProgress(pos, fileSize);
 			if (state == 0) {
 				if (line.find("<dblp:Inproceedings") != std::string::npos) {
 					state = 1;

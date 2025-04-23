@@ -6,6 +6,7 @@ Utilities for local checking of author conflicts.
 
 - `refresh_rdf_cache.pl` checks whether `dblp.rdf.gz` exists locally and is not more than 14 days older than the online version. If not, the current file is downloaded. Files are put in `./`.
 - `ponder_dblp.pl` reads the local `dblp.rdf.gz` and extracts all InProceedings and Articles along with their authors, putting a concise version of the data in local csv files. This takes about an hour and reduces the raw data size from 33+GB to ~1.5GB. The CSVs are put in `./`. You have to overwrite the snapshot manually and **intentionally** for now (see below).
+- `ponder_dblp/` contains a C++ variant of the parser that is parallelized and a bit faster. You need CMake or a modern Visual Studio to build it. It needs to be run in the same folder as the downloaded rdf, e.g. by calling `ponder_dblp\out\build\x64-release\ponder_dblp.exe` if you used VS out of the box without customization of the build process.
 - `query_dblp.ipynb` Jupyter notebook for searching co-authors within a given threshold in years. **Reads the csv files from the `./snapshot/` folder!**
 
 ## Local files
@@ -16,5 +17,5 @@ Utilities for local checking of author conflicts.
 
 ## TODOs
 
-- [ ] check whether parsing can be made faster
+- [x] check whether parsing can be made faster
 - [ ] support incremental updates
