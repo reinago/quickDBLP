@@ -4,7 +4,7 @@ Utilities for local checking of author conflicts. The Jupyter notebook depends o
 
 ## TL;DR:
 ```
-pip install pandas lxml itables requests
+pip install pandas lxml itables requests duckdb
 python refresh_rdf_cache.py
 cd ponder_dblp
 cmake --preset=x64-release
