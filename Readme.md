@@ -34,5 +34,5 @@ open and run `query_dblp.ipynb`
 
 - [x] check whether parsing can be made faster (nearly 10 times, see the C++ thing above.)
 - [ ] support incremental updates
-- [ ] check for multiple authors at once (comma separated)
-- [ ] paste pieces of PCS or other conference software and try to guess authors lists from those
+- [x] check for multiple authors at once (semicolon separated)
+- [x] paste pieces of PCS or other conference software and try to guess author lists from those
