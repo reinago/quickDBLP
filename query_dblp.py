@@ -11,6 +11,7 @@ import duckdb
 con = None
 init_notebook_mode(connected=True)
 
+
 def prepare_data(snapshot_dir):
     global con
     con = duckdb.connect(database=':memory:', read_only=False)
@@ -21,8 +22,8 @@ def prepare_data(snapshot_dir):
     con.execute("prepare find_author as select * from authors where starts_with(upper(Name), upper($name))")
     con.execute("prepare find_author_like as select * from authors where Name ilike $name")
     con.execute("prepare find_author_dblp as select * from authors where DBLP = $dblp")
-    con.execute("prepare find_coauthors as select * from papers_authors join papers on papers_authors.PaperID = papers.NumericID join authors on papers_authors.AuthorID = authors.NumericID where AuthorID in $list and Year >= $year")
-    con.execute("prepare find_copapers as select * from papers_authors join papers on papers_authors.PaperID = papers.NumericID join authors on papers_authors.AuthorID = authors.NumericID where PaperID in (select PaperID from papers_authors where AuthorID in $list) and Year >= $year")
+    con.execute("prepare find_coauthors as select * from papers_authors join papers on papers_authors.PaperID = papers.NumericID join authors on papers_authors.AuthorID = authors.NumericID where AuthorID in $list and Year >= $year order by Name")
+    con.execute("prepare find_copapers as select * from papers_authors join papers on papers_authors.PaperID = papers.NumericID join authors on papers_authors.AuthorID = authors.NumericID where PaperID in (select PaperID from papers_authors where AuthorID in $list) and Year >= $year order by Name")
 
 
 def show_search_UI():
@@ -65,6 +66,8 @@ def show_search_UI():
     # search_output.layout.height = '150px'
     output = widgets.Output()
     toggle_group = widgets.HBox([exclude_self_toggle, explain_toggle])
+    itables_toggle = widgets.Checkbox(value=False, description='Use itables')
+    itables_toggle.style.description_width = description_width
 
     page_text = widgets.Textarea(value=text_blob, description='Webpage Source:')
     page_text.layout.width = '600px'
@@ -77,8 +80,8 @@ def show_search_UI():
     guess_button.layout.margin = '0px 0px 0px 210px'
 
     # Display UI elements
-    display(page_text, guesser, guess_button, search_input, toggle_group, matcher, search_prefilter, 
-            cutoff_group, search_button, search_output, output)
+    display(page_text, guesser, guess_button, search_input, toggle_group, itables_toggle, matcher,
+            search_prefilter, cutoff_group, search_button, search_output, output)
 
     def on_guess_button_clicked(b):
         with output:
@@ -200,13 +203,17 @@ def show_search_UI():
             something = something[["Name", "DBLP_1", "ORCID", "Year"]]
             something["DBLP_1"] = ['<a href="{}">{}</a>'.format(d, d) for d in something["DBLP_1"]]
             something = something.rename(columns={"DBLP_1": "DBLP Author"})
-        # TODO show as datawrangler table mimetype instead
-        # display(something)
-        # show(something, allow_html=True, paging=True)
-        output.append_display_data(HTML(to_html_datatable(something, allow_html=True)))
+        
+        if itables_toggle.value:
+            # itables
+            output.append_display_data(HTML(to_html_datatable(something, allow_html=True)))
+        else:
+            # dataframe built-in
+            output.append_display_data(HTML(something.to_html(escape=False, index=False, justify="left")))
 
     cutoff_slider.observe(expensive_params_changed, names='value')
     cutoff_toggle.observe(expensive_params_changed, names='value')
+    itables_toggle.observe(cheap_params_changed, names='value')
     explain_toggle.observe(cheap_params_changed, names='value')
     exclude_self_toggle.observe(cheap_params_changed, names='value')
     search_button.on_click(on_search_button_clicked)
