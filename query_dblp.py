@@ -1,6 +1,8 @@
 import pandas as pd
 from datetime import datetime
-from itables import init_notebook_mode, show
+from itables import init_notebook_mode, show, to_html_datatable
+from IPython.core.display import HTML
+from itables.widget import ITable
 import ipywidgets as widgets
 from IPython.display import display
 from lxml import html
@@ -8,7 +10,6 @@ import duckdb
 
 con = None
 init_notebook_mode(connected=True)
-
 
 def prepare_data(snapshot_dir):
     global con
@@ -31,12 +32,18 @@ def show_search_UI():
     cutoff = 5
     ignore_cutoff = False
     explain = False
+    exclude_self = False
     description_width = '200px'
+
+    everything = pd.DataFrame(data=None)
+    authors_ids = []
 
     # Create UI elements
     search_input = widgets.Text(value=search, description='Search (semicolon separated):')
     search_input.layout.width = '600px'
     search_input.style.description_width = description_width
+    exclude_self_toggle = widgets.Checkbox(value=exclude_self, description='Exclude self')
+    exclude_self_toggle.style.description_width = description_width
     matcher = widgets.Dropdown(options=['startswith', 'like'], value='startswith', description='Matcher:')
     matcher.layout.width = '400px'
     matcher.style.description_width = description_width
@@ -57,6 +64,7 @@ def show_search_UI():
     search_output.style.description_width = description_width
     # search_output.layout.height = '150px'
     output = widgets.Output()
+    toggle_group = widgets.HBox([exclude_self_toggle, explain_toggle])
 
     page_text = widgets.Textarea(value=text_blob, description='Webpage Source:')
     page_text.layout.width = '600px'
@@ -69,7 +77,8 @@ def show_search_UI():
     guess_button.layout.margin = '0px 0px 0px 210px'
 
     # Display UI elements
-    display(page_text, guesser, guess_button, search_input, matcher, search_prefilter, cutoff_group, explain_toggle, search_button, search_output, output)
+    display(page_text, guesser, guess_button, search_input, toggle_group, matcher, search_prefilter, 
+            cutoff_group, search_button, search_output, output)
 
     def on_guess_button_clicked(b):
         with output:
@@ -108,14 +117,13 @@ def show_search_UI():
                 search_input.value = "; ".join(guessed_authors)
 
     def on_search_button_clicked(b):
+        global everything, authors_ids
         # Update variables based on UI input
         search = search_input.value
         cutoff = cutoff_slider.value
-        explain = explain_toggle.value
         ignore_cutoff = cutoff_toggle.value
 
         with output:
-            output.clear_output()
             if ignore_cutoff:
                 cutoffYear = 0
             else:
@@ -153,32 +161,54 @@ def show_search_UI():
                     authors_ids.append(id)
                     # Get all papers for these authors
                 everything = con.execute(f"execute find_copapers(list:={authors_ids}, year:={cutoffYear})").df()
+                # show(everything, allow_html=True)
 
-                if search_prefilter.value:
-                    pref = search_prefilter.value.strip().split(";")
-                    pref = [p.strip() for p in pref]
-                    everything = everything[everything["DBLP_1"].isin(pref)]
+                update_results()
 
-                if explain:
-                    everything = everything.sort_values(by=["PaperID"])
-                    everything = everything[["DBLP", "Title", "Name", "DBLP_1", "ORCID", "Year"]]
-                    everything["DBLP"] = ['<a href="{}">{}</a>'.format(d, d) for d in everything["DBLP"]]
-                    everything["DBLP_1"] = ['<a href="{}">{}</a>'.format(d, d) for d in everything["DBLP_1"]]
-                    everything = everything.rename(columns={"DBLP": "DBLP Paper", "DBLP_1": "DBLP Author"})
-                else:
-                    everything = everything.sort_values(by=["Name"]).groupby("AuthorID").agg('first')
-                    everything = everything[["Name", "DBLP_1", "ORCID", "Year"]]
-                    everything["DBLP_1"] = ['<a href="{}">{}</a>'.format(d, d) for d in everything["DBLP_1"]]
-                    everything = everything.rename(columns={"DBLP_1": "DBLP Author"})
-                # TODO show as datawrangler table mimetype instead
-                display(everything)
-
-    def params_changed(change):
-        # print(f"Value changed: {change['new']}")
+    def expensive_params_changed(change):
         on_search_button_clicked(None)
 
-    cutoff_slider.observe(params_changed, names='value')
-    cutoff_toggle.observe(params_changed, names='value')
-    explain_toggle.observe(params_changed, names='value')
+    def cheap_params_changed(change):
+        # update_results()
+        on_search_button_clicked(None)
+
+    def update_results():
+        global everything, authors_ids
+        explain = explain_toggle.value
+        exclude_self = exclude_self_toggle.value
+        output.clear_output()
+        # output.append_stdout(f"explaining: {explain}, exclude_self: {exclude_self}")
+
+        something = everything.copy()
+        # filter out authors_ids from something
+        if exclude_self:
+            something = something[~something["AuthorID"].isin(authors_ids)]
+
+        if search_prefilter.value:
+            pref = search_prefilter.value.strip().split(";")
+            pref = [p.strip() for p in pref]
+            something = something[something["DBLP_1"].isin(pref)]
+
+        if explain:
+            something = something.sort_values(by=["PaperID"])
+            something = something[["DBLP", "Title", "Name", "DBLP_1", "ORCID", "Year"]]
+            something["DBLP"] = ['<a href="{}">{}</a>'.format(d, d) for d in something["DBLP"]]
+            something["DBLP_1"] = ['<a href="{}">{}</a>'.format(d, d) for d in something["DBLP_1"]]
+            something = something.rename(columns={"DBLP": "DBLP Paper", "DBLP_1": "DBLP Author"})
+        else:
+            something = something.sort_values(by=["Name"]).groupby("AuthorID").agg('first')
+            something = something[["Name", "DBLP_1", "ORCID", "Year"]]
+            something["DBLP_1"] = ['<a href="{}">{}</a>'.format(d, d) for d in something["DBLP_1"]]
+            something = something.rename(columns={"DBLP_1": "DBLP Author"})
+        # TODO show as datawrangler table mimetype instead
+        # display(something)
+        # show(something, allow_html=True, paging=True)
+        output.append_display_data(HTML(to_html_datatable(something, allow_html=True)))
+
+    cutoff_slider.observe(expensive_params_changed, names='value')
+    cutoff_toggle.observe(expensive_params_changed, names='value')
+    explain_toggle.observe(cheap_params_changed, names='value')
+    exclude_self_toggle.observe(cheap_params_changed, names='value')
     search_button.on_click(on_search_button_clicked)
+    search_input.on_submit(on_search_button_clicked)
     guess_button.on_click(on_guess_button_clicked)
