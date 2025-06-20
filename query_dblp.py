@@ -22,8 +22,8 @@ def prepare_data(snapshot_dir):
     con.execute("prepare find_author as select * from authors where starts_with(upper(Name), upper($name))")
     con.execute("prepare find_author_like as select * from authors where Name ilike $name")
     con.execute("prepare find_author_dblp as select * from authors where DBLP = $dblp")
-    con.execute("prepare find_coauthors as select * from papers_authors join papers on papers_authors.PaperID = papers.NumericID join authors on papers_authors.AuthorID = authors.NumericID where AuthorID in $list and Year >= $year order by Name")
-    con.execute("prepare find_copapers as select * from papers_authors join papers on papers_authors.PaperID = papers.NumericID join authors on papers_authors.AuthorID = authors.NumericID where PaperID in (select PaperID from papers_authors where AuthorID in $list) and Year >= $year order by Name")
+    con.execute("prepare find_coauthors as select * from papers_authors join papers on papers_authors.PaperID = papers.NumericID join authors on papers_authors.AuthorID = authors.NumericID where AuthorID in $list and Year >= $year")
+    con.execute("prepare find_copapers as select * from papers_authors join papers on papers_authors.PaperID = papers.NumericID join authors on papers_authors.AuthorID = authors.NumericID where PaperID in (select PaperID from papers_authors where AuthorID in $list) and Year >= $year")
 
 
 def show_search_UI():
@@ -203,10 +203,12 @@ def show_search_UI():
             something = something[["Name", "DBLP_1", "ORCID", "Year"]]
             something["DBLP_1"] = ['<a href="{}">{}</a>'.format(d, d) for d in something["DBLP_1"]]
             something = something.rename(columns={"DBLP_1": "DBLP Author"})
-        
+
         if itables_toggle.value:
             # itables
-            output.append_display_data(HTML(to_html_datatable(something, allow_html=True)))
+            output.append_display_data(HTML(to_html_datatable(something, allow_html=True,
+                                                              layout={"topStart": "search", "topEnd": "pageLength"},
+                                                              column_filters="header", showIndex=False)))
         else:
             # dataframe built-in
             output.append_display_data(HTML(something.to_html(escape=False, index=False, justify="left")))
