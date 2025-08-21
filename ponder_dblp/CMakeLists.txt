@@ -18,7 +18,7 @@ FetchContent_Declare(vcpkg-download
 FetchContent_GetProperties(vcpkg-download)
 if (NOT vcpkg-download_POPULATED)
   message(STATUS "Fetch vcpkg ...")
-  FetchContent_Populate(vcpkg-download)
+  FetchContent_MakeAvailable(vcpkg-download)
   mark_as_advanced(FORCE
     FETCHCONTENT_SOURCE_DIR_VCPKG-DOWNLOAD
     FETCHCONTENT_UPDATES_DISCONNECTED_VCPKG-DOWNLOAD)
