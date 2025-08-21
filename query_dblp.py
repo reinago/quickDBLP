@@ -140,6 +140,8 @@ def show_search_UI():
                 if cleaned.startswith("https://dblp.org"):
                     h = con.execute(f"execute find_author_dblp(dblp:='{cleaned}')").df()
                 else:
+                    cleaned = cleaned.encode('ascii', 'xmlcharrefreplace').decode('ascii')
+                    print(f"Searching for: {cleaned}")
                     if cleaned.find(",") > -1:
                         cleaned = cleaned.split(",")
                         cleaned = cleaned[1].strip() + " " + cleaned[0].strip()
