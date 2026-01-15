@@ -7,6 +7,7 @@
 #include <vector>
 #include <tuple>
 #include <regex>
+#include <filesystem>
 
 #include <boost/iostreams/filtering_stream.hpp>
 #include <boost/iostreams/filter/gzip.hpp>
@@ -61,6 +62,84 @@ struct Paper {
 InMemDB<uint32_t, Paper> paperDB;
 
 LinkDB<uint32_t> papersAndAuthorsDB;
+
+class ParserState {
+public:
+	enum Value : uint8_t {
+		Searching = 0,
+		Inproceedings,
+		Incollection,
+		Article,
+		Book,
+		Part,
+		Informal,
+		Data,
+		NUMBER_OF_PARSER_STATES
+	};
+
+	inline static std::string startingPrefix = "<dblp:";
+	inline static std::string endingPrefix = "</dblp:";
+
+	constexpr operator Value() const {
+		return state;
+	}
+
+	static std::string getEntityFromState(Value st) {
+		switch (st) {
+		case Inproceedings:
+			return "Inproceedings";
+		case Incollection:
+			return "Incollection";
+		case Article:
+			return "Article";
+		case Book:
+			return "Book";
+		case Part:
+			return "Part";
+		case Informal:
+			return "Informal";
+		case Data:
+			return "Data";
+		default:
+			return "Unknown";
+		}
+	}
+
+	std::string getEntity() const {
+		return getEntityFromState(state);
+	}
+
+	std::string getStartSnippet() const {
+		return startingPrefix + getEntity();
+	}
+	std::string getEndSnippet() const {
+		return endingPrefix + getEntity() + ">";
+	}
+
+	void checkForStateChange(const std::string& line) {
+		if (state == Searching) {
+			if (line.find(startingPrefix) == std::string::npos) {
+				return;
+			}
+			for (int i = 1; i < NUMBER_OF_PARSER_STATES; ++i) {
+				if (line.find(getEntityFromState(static_cast<Value>(i)), startingPrefix.size()) == startingPrefix.size()) {
+					state = static_cast<Value>(i);
+					return;
+				}
+			}
+		} else {
+			if (line.find(endingPrefix) == std::string::npos) {
+				return;
+			}
+			if (line.find(getEntity(), endingPrefix.size()) == endingPrefix.size()) {
+				state = Searching;
+			}
+		}
+	}
+
+private:
+	Value state = Searching;
+};
 
 // Helper functions
 int checkAuthor(const std::string& authorID, const std::string& authorOrcid, const std::string& authorName) {
@@ -223,41 +302,31 @@ int main() {
 		// Process file
 		std::string line;
 		int state = 0; // 0 = searching, 1 = inproceedings, 3 = article
+		ParserState parserState, oldState;
 		std::vector<std::string> paperBuffer;
 		std::cout << "Processing database dump..." << std::endl;
 		while (std::getline(inputFile, line)) {
 			std::streampos pos = fd.seek(0, std::ios::cur);
 			checkProgress(pos, fileSize);
-			if (state == 0) {
-				if (line.find("<dblp:Inproceedings") != std::string::npos) {
-					state = 1;
-					printInfo("Found Inproceedings entry");
-					paperBuffer.clear();
+			parserState.checkForStateChange(line);
+			if (parserState != oldState) {
+				if (oldState != ParserState::Searching) {
+					printInfo("End of " + oldState.getEntity() + " entry");
 					paperBuffer.push_back(line);
-				} else if (line.find("<dblp:Article") != std::string::npos) {
-					state = 3;
-					printInfo("Found Article entry");
+#ifdef USE_THREAD_POOL
+					threadPool.enqueue([paperBuffer]() { processPaperBuffer(paperBuffer); });
+#else
+					processPaperBuffer(paperBuffer);
+#endif
+				} else {
+					printInfo("Found " + parserState.getEntity() + " entry");
 					paperBuffer.clear();
 					paperBuffer.push_back(line);
 				}
+				oldState = parserState;
 			} else {
-				paperBuffer.push_back(line);
-				if (state == 1 && line.find("</dblp:Inproceedings") != std::string::npos) {
-					state = 0;
-					printInfo("End of Inproceedings entry");
-#ifdef USE_THREAD_POOL
-					threadPool.enqueue([paperBuffer]() { processPaperBuffer(paperBuffer); });
-#else
-					processPaperBuffer(paperBuffer);
-#endif
-				} else if (state == 3 && line.find("</dblp:Article") != std::string::npos) {
-					state = 0;
-					printInfo("End of Article entry");
-#ifdef USE_THREAD_POOL
-					threadPool.enqueue([paperBuffer]() { processPaperBuffer(paperBuffer); });
-#else
-					processPaperBuffer(paperBuffer);
-#endif
+				if (parserState != ParserState::Searching) {
+					paperBuffer.push_back(line);
 				}
 			}
 		}
