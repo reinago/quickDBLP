@@ -39,6 +39,17 @@ def show_search_UI():
     everything = pd.DataFrame(data=None)
     authors_ids = []
 
+    paper_type_map = {
+        0: "Invalid",
+        1: "Inproceedings",
+		2: "Incollection",
+		3: "Article",
+		4: "Book",
+		5: "Part",
+		6: "Informal",
+		7: "Data"
+    }
+
     # Create UI elements
     search_input = widgets.Text(value=search, description='Search (semicolon separated):')
     search_input.layout.width = '600px'
@@ -69,6 +80,18 @@ def show_search_UI():
     itables_toggle = widgets.Checkbox(value=False, description='Use itables')
     itables_toggle.style.description_width = description_width
 
+    ignore_label = widgets.Label(value='Ignore Paper Types:')
+    ignore_label.style.description_width = description_width
+    ignore_inproceedings_toggle = widgets.Checkbox(value=False, description='Inproceedings', layout=widgets.Layout(width='210px'))
+    ignore_incollection_toggle = widgets.Checkbox(value=False, description='Incollection', layout=widgets.Layout(width='210px'))
+    ignore_article_toggle = widgets.Checkbox(value=False, description='Article', layout=widgets.Layout(width='210px'))
+    ignore_book_toggle = widgets.Checkbox(value=False, description='Book', layout=widgets.Layout(width='210px'))
+    ignore_part_toggle = widgets.Checkbox(value=False, description='Part', layout=widgets.Layout(width='210px'))
+    ignore_informal_toggle = widgets.Checkbox(value=False, description='Informal', layout=widgets.Layout(width='210px'))
+    ignore_data_toggle = widgets.Checkbox(value=False, description='Data', layout=widgets.Layout(width='210px'))
+    ignore_1_group = widgets.HBox([ignore_label, ignore_inproceedings_toggle, ignore_incollection_toggle, ignore_article_toggle, ignore_book_toggle])
+    ignore_2_group = widgets.HBox([ignore_label, ignore_part_toggle, ignore_informal_toggle, ignore_data_toggle])
+
     page_text = widgets.Textarea(value=text_blob, description='Webpage Source:')
     page_text.layout.width = '600px'
     page_text.style.description_width = description_width
@@ -81,7 +104,7 @@ def show_search_UI():
 
     # Display UI elements
     display(page_text, guesser, guess_button, search_input, toggle_group, itables_toggle, matcher,
-            search_prefilter, cutoff_group, search_button, search_output, output)
+            search_prefilter, cutoff_group, ignore_1_group, ignore_2_group, search_button, search_output, output)
 
     def on_guess_button_clicked(b):
         with output:
@@ -174,14 +197,14 @@ def show_search_UI():
         on_search_button_clicked(None)
 
     def cheap_params_changed(change):
-        # update_results()
-        on_search_button_clicked(None)
+        update_results()
+        # on_search_button_clicked(None)
 
     def update_results():
         global everything, authors_ids
         explain = explain_toggle.value
         exclude_self = exclude_self_toggle.value
-        output.clear_output()
+        output.clear_output(wait=True)
         # output.append_stdout(f"explaining: {explain}, exclude_self: {exclude_self}")
 
         something = everything.copy()
@@ -194,9 +217,29 @@ def show_search_UI():
             pref = [p.strip() for p in pref]
             something = something[something["DBLP_1"].isin(pref)]
 
+        # ignores
+        ignore_types = []
+        if ignore_inproceedings_toggle.value:
+            ignore_types.append(1)
+        if ignore_incollection_toggle.value:
+            ignore_types.append(2)
+        if ignore_article_toggle.value:
+            ignore_types.append(3)
+        if ignore_book_toggle.value:
+            ignore_types.append(4)
+        if ignore_part_toggle.value:
+            ignore_types.append(5)
+        if ignore_informal_toggle.value:
+            ignore_types.append(6)
+        if ignore_data_toggle.value:
+            ignore_types.append(7)
+        if ignore_types:
+            something = something[~something["Type"].isin(ignore_types)]
+
         if explain:
             something = something.sort_values(by=["PaperID"])
-            something = something[["DBLP", "Title", "Name", "DBLP_1", "ORCID", "Year"]]
+            something = something[["DBLP", "Title", "Type", "Name", "DBLP_1", "ORCID", "Year"]]
+            something.replace({"Type": paper_type_map}, inplace=True)
             something["DBLP"] = ['<a href="{}">{}</a>'.format(d, d) for d in something["DBLP"]]
             something["DBLP_1"] = ['<a href="{}">{}</a>'.format(d, d) for d in something["DBLP_1"]]
             something = something.rename(columns={"DBLP": "DBLP Paper", "DBLP_1": "DBLP Author"})
@@ -213,13 +256,21 @@ def show_search_UI():
                                                               column_filters="header", showIndex=False)))
         else:
             # dataframe built-in
-            output.append_display_data(HTML(something.to_html(escape=False, index=False, justify="left")))
+            with output:
+                display(HTML(something.to_html(escape=False, index=False, justify="left")))
 
     cutoff_slider.observe(expensive_params_changed, names='value')
     cutoff_toggle.observe(expensive_params_changed, names='value')
     itables_toggle.observe(cheap_params_changed, names='value')
     explain_toggle.observe(cheap_params_changed, names='value')
     exclude_self_toggle.observe(cheap_params_changed, names='value')
+    ignore_inproceedings_toggle.observe(cheap_params_changed, names='value')
+    ignore_incollection_toggle.observe(cheap_params_changed, names='value')
+    ignore_article_toggle.observe(cheap_params_changed, names='value')
+    ignore_book_toggle.observe(cheap_params_changed, names='value')
+    ignore_part_toggle.observe(cheap_params_changed, names='value')
+    ignore_informal_toggle.observe(cheap_params_changed, names='value')
+    ignore_data_toggle.observe(cheap_params_changed, names='value')
     search_button.on_click(on_search_button_clicked)
     search_input.on_submit(on_search_button_clicked)
     guess_button.on_click(on_guess_button_clicked)
