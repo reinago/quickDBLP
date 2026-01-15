@@ -57,7 +57,8 @@ ThreadSafeIDGenerator<uint32_t> papersToNumbers;
 struct Paper {
 	std::string id;
 	std::string title;
-	int year = 0;
+	uint8_t type = 0;
+	uint16_t year = 0;
 };
 InMemDB<uint32_t, Paper> paperDB;
 
@@ -109,11 +110,19 @@ public:
 		return getEntityFromState(state);
 	}
 
+	static std::string getStartSnippet(Value st) {
+		return startingPrefix + getEntityFromState(st);
+	}
+
+	static std::string getEndSnippet(Value st) {
+		return endingPrefix + getEntityFromState(st) + ">";
+	}
+
 	std::string getStartSnippet() const {
-		return startingPrefix + getEntity();
+		return getStartSnippet(state);
 	}
 	std::string getEndSnippet() const {
-		return endingPrefix + getEntity() + ">";
+		return getEndSnippet(state);
 	}
 
 	void checkForStateChange(const std::string& line) {
@@ -156,7 +165,7 @@ int checkAuthor(const std::string& authorID, const std::string& authorOrcid, con
 	return realID;
 }
 
-int processPaperBuffer(std::vector<std::string> buf) {
+int processPaperBuffer(std::vector<std::string> buf, ParserState::Value paperType) {
 	static std::regex idRegex(R"q(rdf:about="([^"]+)")q");
 	static std::regex titleRegex(R"q(<dblp:title>([^<]+)</dblp:title>)q");
 	static std::regex yearRegex(R"q(<dblp:yearOfPublication.*?>(\d+)</dblp:yearOfPublication>)q");
@@ -172,13 +181,13 @@ int processPaperBuffer(std::vector<std::string> buf) {
 	std::string currPaperID;
 	uint32_t currPaperNumericID = 0;
 	std::string currTitle;
-	int currYear = 0;
+	uint16_t currYear = 0;
 	std::string authorID, authorOrcid, authorName;
 
 	bool iteratingAuthors = false;
 
 	for (const auto& line : buf) {
-		if (line.find("<dblp:Inproceedings") != std::string::npos || line.find("<dblp:Article") != std::string::npos) {
+		if (line.find(ParserState::getStartSnippet(paperType)) == 0) {
 			// started a paper entry
 			if (std::regex_search(line, match, idRegex)) {
 				currPaperID = match[1];
@@ -189,7 +198,7 @@ int processPaperBuffer(std::vector<std::string> buf) {
 			} else {
 				printError("No ID found in entry: " + line);
 			}
-		} else if (line.find("</dblp:Inproceedings") != std::string::npos || line.find("</dblp:Article") != std::string::npos) {
+		} else if (line.find(ParserState::getEndSnippet(paperType)) == 0) {
 			// end of the paper entry
 			if (currAuthors.size() != currCreators.size()) {
 				printError("Number of authors and creators do not match for paper " + currPaperID + ": " +
@@ -200,14 +209,14 @@ int processPaperBuffer(std::vector<std::string> buf) {
 					papersAndAuthorsDB.storeLink(currPaperNumericID, realID);
 				}
 			}
-			paperDB.storeItem(currPaperNumericID, { currPaperID, currTitle, currYear });
+			paperDB.storeItem(currPaperNumericID, { currPaperID, currTitle, paperType, currYear });
 		} else {
 			// analyze the paper entry
 			if (std::regex_search(line, match, titleRegex)) {
 				currTitle = match[1];
 				printInfo("Current Title: " + currTitle);
 			} else if (std::regex_search(line, match, yearRegex)) {
-				currYear = std::stoi(match[1]);
+				currYear = static_cast<uint16_t>(std::stoi(match[1]));
 				printInfo("Current Year: " + std::to_string(currYear));
 			} else if (std::regex_search(line, match, authorRegex)) {
 				printInfo("Found author ID: " + match[1].str());
@@ -231,7 +240,7 @@ int processPaperBuffer(std::vector<std::string> buf) {
 				}
 			}
 		}
-	}
+	} 
 	return 0;
 }
 
@@ -242,13 +251,13 @@ void dumpData() {
 	std::ofstream papersAuthorsFile("dblp_papers_authors.csv");
 
 	// Initialize files
-	papersFile << "NumericID\tDBLP\tTitle\tYear\n";
+	papersFile << "NumericID\tDBLP\tTitle\tType\tYear\n";
 	authorsFile << "NumericID\tDBLP\tName\tORCID\n";
 	papersAuthorsFile << "PaperID\tAuthorID\n";
 
 	for (uint32_t p = 1; p < papersToNumbers.getMaxID(); ++p) {
 		auto paper = paperDB.getItem(p);
-		papersFile << p << "\t" << paper.id << "\t" << paper.title << "\t" << paper.year << "\n";
+		papersFile << p << "\t" << paper.id << "\t" << paper.title << "\t" << paper.type << "\t" << paper.year << "\n";
 	}
 	for (uint32_t a = 1; a < authorsToNumbers.getMaxID(); ++a) {
 		auto author = authorDB.getItem(a);
@@ -290,10 +299,14 @@ int main() {
 		// Open gzipped input file using Boost.Iostreams
 		boost::iostreams::filtering_istream inputFile;
 		inputFile.push(boost::iostreams::gzip_decompressor());
-		auto fd = boost::iostreams::file_descriptor("dblp.rdf.gz");
+		// hack for broken visual studio cwd
+		//std::filesystem::current_path("h:\\src\\quickDBLP");
+		//const std::string inputFilePath = "mini.rdf.gz";
+		const std::string inputFilePath = "dblp.rdf.gz";
+		auto fd = boost::iostreams::file_descriptor(inputFilePath);
 		inputFile.push(fd);
 
-		auto fd2 = boost::iostreams::file_descriptor("dblp.rdf.gz");
+		auto fd2 = boost::iostreams::file_descriptor(inputFilePath);
 		fd2.seek(0, std::ios::end);
 		std::streampos fileSize = fd2.seek(0, std::ios::cur);
 
@@ -313,10 +326,11 @@ int main() {
 				if (oldState != ParserState::Searching) {
 					printInfo("End of " + oldState.getEntity() + " entry");
 					paperBuffer.push_back(line);
+					ParserState::Value paperType = oldState;
 #ifdef USE_THREAD_POOL
-					threadPool.enqueue([paperBuffer]() { processPaperBuffer(paperBuffer); });
+					threadPool.enqueue([paperBuffer, paperType]() { processPaperBuffer(paperBuffer, paperType); });
 #else
-					processPaperBuffer(paperBuffer);
+					processPaperBuffer(paperBuffer, paperType);
 #endif
 				} else {
 					printInfo("Found " + parserState.getEntity() + " entry");
