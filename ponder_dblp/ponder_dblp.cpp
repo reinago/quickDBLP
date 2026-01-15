@@ -257,7 +257,7 @@ void dumpData() {
 
 	for (uint32_t p = 1; p < papersToNumbers.getMaxID(); ++p) {
 		auto paper = paperDB.getItem(p);
-		papersFile << p << "\t" << paper.id << "\t" << paper.title << "\t" << paper.type << "\t" << paper.year << "\n";
+		papersFile << p << "\t" << paper.id << "\t" << paper.title << "\t" << unsigned(paper.type) << "\t" << paper.year << "\n";
 	}
 	for (uint32_t a = 1; a < authorsToNumbers.getMaxID(); ++a) {
 		auto author = authorDB.getItem(a);
