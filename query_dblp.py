@@ -197,14 +197,14 @@ def show_search_UI():
         on_search_button_clicked(None)
 
     def cheap_params_changed(change):
-        # update_results()
-        on_search_button_clicked(None)
+        update_results()
+        # on_search_button_clicked(None)
 
     def update_results():
         global everything, authors_ids
         explain = explain_toggle.value
         exclude_self = exclude_self_toggle.value
-        output.clear_output()
+        output.clear_output(wait=True)
         # output.append_stdout(f"explaining: {explain}, exclude_self: {exclude_self}")
 
         something = everything.copy()
@@ -251,10 +251,12 @@ def show_search_UI():
         
         if itables_toggle.value:
             # itables
-            output.append_display_data(HTML(to_html_datatable(something, allow_html=True)))
+            with output:
+                display(HTML(to_html_datatable(something, allow_html=True)))
         else:
             # dataframe built-in
-            output.append_display_data(HTML(something.to_html(escape=False, index=False, justify="left")))
+            with output:
+                display(HTML(something.to_html(escape=False, index=False, justify="left")))
 
     cutoff_slider.observe(expensive_params_changed, names='value')
     cutoff_toggle.observe(expensive_params_changed, names='value')
