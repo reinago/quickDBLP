@@ -38,7 +38,7 @@ project(ponder_dblp VERSION 0.1.0 DESCRIPTION "DBLP preprocessor")
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_VERBOSE_MAKEFILE ON)
 
-# find_package(zlib CONFIG REQUIRED)
+find_package(zlib-ng CONFIG REQUIRED)
 find_package(boost_iostreams CONFIG REQUIRED)
 
 
@@ -48,7 +48,7 @@ add_executable(ponder_dblp "${CMAKE_CURRENT_SOURCE_DIR}/ponder_dblp.cpp")
 
 target_include_directories(ponder_dblp PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 # target_link_directories(starsurvey PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/lib")
-target_link_libraries(ponder_dblp PRIVATE Boost::iostreams)
+target_link_libraries(ponder_dblp PRIVATE Boost::iostreams zlib-ng::zlib)
 # add_custom_command(
 #         TARGET starsurvey POST_BUILD
 #         COMMAND ${CMAKE_COMMAND} -E copy_directory

@@ -1,6 +1,7 @@
 #pragma once
 #include <queue>
 #include <mutex>
+#include <functional>
 
 class ThreadPool {
 public:

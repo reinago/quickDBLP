@@ -5,23 +5,30 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include <array>
 #include <tuple>
 #include <regex>
 #include <filesystem>
 
-#include <boost/iostreams/filtering_stream.hpp>
-#include <boost/iostreams/filter/gzip.hpp>
-#include <boost/iostreams/device/file.hpp>
-#include <boost/iostreams/device/file_descriptor.hpp>
-
-#include "ThreadSafeIDGenerator.hpp"
-#include "InMemDB.hpp"
-#include "ThreadPool.hpp"
-
+// #define USE_BOOST_IOSTREAMS
 // TODO
 // profile the code
 // is it better collect everything per thread and merge afterward? ID merging would be a headache
 #define USE_THREAD_POOL 1
+
+#ifndef USE_BOOST_IOSTREAMS
+#define WITH_GZFILEOP
+#include <zlib-ng.h>
+#else
+#include <boost/iostreams/filtering_stream.hpp>
+#include <boost/iostreams/filter/gzip.hpp>
+#include <boost/iostreams/device/file.hpp>
+#include <boost/iostreams/device/file_descriptor.hpp>
+#endif
+
+#include "ThreadSafeIDGenerator.hpp"
+#include "InMemDB.hpp"
+#include "ThreadPool.hpp"
 
 // Utility functions for logging
 enum class LogLevel { None, Error, Warning, Info };
@@ -278,7 +285,7 @@ void checkProgress(uint64_t current, uint64_t total) {
 	const int barWidth = 70;
 
 	if (current - lastProgress > 10000000) {
-		auto progress = static_cast<float>(current) / total;
+		auto progress = static_cast<double>(current) / total;
 		std::cout << "[";
 		int pos = barWidth * progress;
 		for (int i = 0; i < barWidth; ++i) {
@@ -293,34 +300,80 @@ void checkProgress(uint64_t current, uint64_t total) {
 	}
 }
 
+#ifndef USE_BOOST_IOSTREAMS
+void checkGZProgress(uint64_t lineCount, gzFile file, uint64_t total) {
+	if (lineCount % 100000 == 0) {
+		auto pos = zng_gztell(file);
+		if (pos > -1) {
+			checkProgress(static_cast<uint64_t>(pos), total);
+		}
+	}
+}
+#else
+void checkBOOSTProgress(uint64_t lineCount, boost::iostreams::file_descriptor& fd, uint64_t total) {
+	if (lineCount % 100000 == 0) {
+		std::streampos pos = fd.seek(0, std::ios::cur);
+		checkProgress(static_cast<uint64_t>(pos), total);
+	}
+}
+#endif
+
 int main() {
 
 	try {
-		// Open gzipped input file using Boost.Iostreams
-		boost::iostreams::filtering_istream inputFile;
-		inputFile.push(boost::iostreams::gzip_decompressor());
+
 		// hack for broken visual studio cwd
 		//std::filesystem::current_path("h:\\src\\quickDBLP");
+
 		//const std::string inputFilePath = "mini.rdf.gz";
 		const std::string inputFilePath = "dblp.rdf.gz";
+
+		std::cout << "Checking database size...";
+		std::vector<char> hugebuf;
+		hugebuf.resize(1024 * 1024 * 256);
+
+#ifdef USE_BOOST_IOSTREAMS
+		boost::iostreams::filtering_istream inputFile;
+		inputFile.push(boost::iostreams::gzip_decompressor());
 		auto fd = boost::iostreams::file_descriptor(inputFilePath);
 		inputFile.push(fd);
-
 		auto fd2 = boost::iostreams::file_descriptor(inputFilePath);
 		fd2.seek(0, std::ios::end);
-		std::streampos fileSize = fd2.seek(0, std::ios::cur);
-
-		ThreadPool threadPool(std::thread::hardware_concurrency() * 2);
+		std::streampos fileSizeBOOST = fd2.seek(0, std::ios::cur);
+#else
+		auto file = zng_gzopen(inputFilePath.c_str(), "rb");
+		if (!file) {
+			std::cerr << "Failed to open file with zlib: " << inputFilePath << "\n";
+			return 1;
+		}
+		uint64_t fileSizeGZ = 0;
+		int numRead = 0;
+		while ((numRead = zng_gzread(file, hugebuf.data(), hugebuf.size())) > 0) {
+			fileSizeGZ += numRead;
+		}
+		zng_gzclose(file);
+		std::cout << "File size (zlib): " << fileSizeGZ << " bytes\n";
+		
+		file = zng_gzopen(inputFilePath.c_str(), "rb");
+#endif
 
 		// Process file
+		ThreadPool threadPool(std::thread::hardware_concurrency() * 2);
 		std::string line;
+		uint64_t lineCount = 0;
 		int state = 0; // 0 = searching, 1 = inproceedings, 3 = article
 		ParserState parserState, oldState;
 		std::vector<std::string> paperBuffer;
 		std::cout << "Processing database dump..." << std::endl;
+
+#ifdef USE_BOOST_IOSTREAMS
 		while (std::getline(inputFile, line)) {
-			std::streampos pos = fd.seek(0, std::ios::cur);
-			checkProgress(pos, fileSize);
+			checkBOOSTProgress(++lineCount, fd, fileSizeBOOST);
+#else
+		while (zng_gzgets(file, hugebuf.data(), hugebuf.size()) != nullptr) {
+			line = hugebuf.data();
+			checkGZProgress(++lineCount, file, fileSizeGZ);
+#endif
 			parserState.checkForStateChange(line);
 			if (parserState != oldState) {
 				if (oldState != ParserState::Searching) {
@@ -348,6 +401,9 @@ int main() {
 		threadPool.waitForAll();
 		std::cout << "saving CSVs..." << std::endl;
 		dumpData();
+#ifndef USE_BOOST_IOSTREAMS
+		zng_gzclose(file);
+#endif
 	} catch (const std::exception& e) {
 		printError("Exception: " + std::string(e.what()));
 		return 1;
