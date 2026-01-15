@@ -7,6 +7,7 @@ import ipywidgets as widgets
 from IPython.display import display
 from lxml import html
 import duckdb
+import uuid
 
 con = None
 init_notebook_mode(connected=True)
@@ -251,7 +252,8 @@ def show_search_UI():
 
         if itables_toggle.value:
             # itables
-            output.append_display_data(HTML(to_html_datatable(something, allow_html=True,
+            with output:
+                display(HTML(to_html_datatable(something, allow_html=True, table_id="T" + str(uuid.uuid4()), ordering=False,
                                                               layout={"topStart": "search", "topEnd": "pageLength"},
                                                               column_filters="header", showIndex=False)))
         else:
