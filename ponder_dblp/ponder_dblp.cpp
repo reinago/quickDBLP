@@ -318,15 +318,39 @@ void checkBOOSTProgress(uint64_t lineCount, boost::iostreams::file_descriptor& f
 }
 #endif
 
+bool checkLockFile(const std::string& lockFilePath) {
+	if (std::filesystem::exists(lockFilePath)) {
+		std::cerr << "Lock file exists. Another instance may be running. Exiting.";
+		return false;
+	}
+	// Create lock file
+	std::ofstream lockFile(lockFilePath);
+	if (!lockFile) {
+		std::cerr << "Failed to create lock file. Exiting.";
+		return false;
+	}
+	lockFile << "Lock file for ponder_dblp. Remove this file only if you are SURE no other instance is running.\n";
+	return true;
+}
+
+void removeLockFile(const std::string& lockFilePath) {
+	if (std::filesystem::exists(lockFilePath)) {
+		std::filesystem::remove(lockFilePath);
+	}
+}
+
 int main() {
+	// hack for broken visual studio cwd
+	//std::filesystem::current_path("h:\\src\\quickDBLP");
+
+	//const std::string inputFilePath = "mini.rdf.gz";
+	const std::string inputFilePath = "dblp.rdf.gz";
+	const std::string lockFilePath = inputFilePath + ".lock";
 
 	try {
-
-		// hack for broken visual studio cwd
-		//std::filesystem::current_path("h:\\src\\quickDBLP");
-
-		//const std::string inputFilePath = "mini.rdf.gz";
-		const std::string inputFilePath = "dblp.rdf.gz";
+		if (!checkLockFile(lockFilePath)) {
+			return 1;
+		}
 
 		std::cout << "Checking database size...";
 		std::vector<char> hugebuf;
@@ -344,6 +368,7 @@ int main() {
 		auto file = zng_gzopen(inputFilePath.c_str(), "rb");
 		if (!file) {
 			std::cerr << "Failed to open file with zlib: " << inputFilePath << "\n";
+			removeLockFile(lockFilePath);
 			return 1;
 		}
 		uint64_t fileSizeGZ = 0;
@@ -406,10 +431,13 @@ int main() {
 #endif
 	} catch (const std::exception& e) {
 		printError("Exception: " + std::string(e.what()));
+		removeLockFile(lockFilePath);
 		return 1;
 	} catch (...) {
 		printError("Unknown exception occurred.");
+		removeLockFile(lockFilePath);
 		return 1;
 	}
+	removeLockFile(lockFilePath);
 	return 0;
 }
