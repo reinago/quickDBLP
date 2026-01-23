@@ -2,12 +2,6 @@
   "name": "ponderdblp",
   "version-string": "0.1.0",
   "dependencies": [
-    {
-      "name": "boost-iostreams",
-      "features": [
-        "zlib"
-      ]
-    },
     "zlib-ng"
   ]
 }

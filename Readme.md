@@ -1,16 +1,29 @@
 # quickDBLP
 
-Utilities for local checking of author conflicts. The Jupyter notebook depends on `pandas`, `lxml`, and `itables`, the python cache fetcher on `requests`.
+Utilities for local checking of author conflicts.
 
-## TL;DR:
+## TL;DR
+prepare python env
 ```
-pip install pandas lxml itables requests duckdb
-python refresh_rdf_cache.py
+python -m venv .venv
+.venv\Scripts\Activate.(bat|ps1|sh) # depending on your shell!
+pip install -r requirements.txt
+```
+compile parser (you need to have CMake installed and a dev environment active, e.g. using a Visual Studio Developer Command Prompt)
+```
 cd ponder_dblp
-cmake --preset=x64-release
+mkdir build
+cmake --preset=x64-release .
 cmake --build --preset=x64-release
 cd ..
-ponder_dblp\out\build\x64-release\ponder_dblp.exe
+```
+get/refresh DBLP entries
+```
+python refresh_rdf_cache.py
+```
+parse and move snapshot into place
+```
+ponder_dblp\build\x64-release\ponder_dblp.exe
 move *.csv snapshot
 ```
 open and run `query_dblp.ipynb`
@@ -18,8 +31,6 @@ open and run `query_dblp.ipynb`
 ## Description
 
 - `refresh_rdf_cache.py` cache fetcher in python: checks whether `dblp.rdf.gz` exists locally and is not more than 14 days older than the online version. If not, the current file is downloaded. File is put in `./`.
-- `refresh_rdf_cache.pl` (deprecated) checks whether `dblp.rdf.gz` exists locally and is not more than 14 days older than the online version. If not, the current file is downloaded. File is put in `./`. Should work out-of-the-box with Strawberry Perl (v5.40 and up).
-- `ponder_dblp.pl` (deprecated) reads the local `dblp.rdf.gz` and extracts all InProceedings and Articles along with their authors, putting a concise version of the data in local csv files. This takes about an hour and reduces the raw data size from 33+GB to ~1.5GB. The CSVs are put in `./`. You have to overwrite the snapshot manually and **intentionally** for now (see below).
 - `ponder_dblp/` contains a multi-threaded C++ variant of the parser that is a bit faster. You need CMake or a modern Visual Studio (with CMake support) to build it. It needs to be run in the same folder as the downloaded rdf, e.g. by calling `ponder_dblp\out\build\x64-release\ponder_dblp.exe` if you used VS out of the box without customization of the build process. It still needs more than 7 mins to do its thing and can possibly be further optimized.
 - `query_dblp.ipynb` Jupyter notebook for searching co-authors within a given threshold in years. **Reads the csv files from the `./snapshot/` folder!**
 

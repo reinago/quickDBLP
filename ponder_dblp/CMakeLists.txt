@@ -39,26 +39,13 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_VERBOSE_MAKEFILE ON)
 
 find_package(zlib-ng CONFIG REQUIRED)
-find_package(boost_iostreams CONFIG REQUIRED)
 
-
-# file(GLOB_RECURSE DBLP_SRC_FILES RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}" "*.cpp")
 
 add_executable(ponder_dblp "${CMAKE_CURRENT_SOURCE_DIR}/ponder_dblp.cpp")
 
 target_include_directories(ponder_dblp PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-# target_link_directories(starsurvey PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/lib")
-target_link_libraries(ponder_dblp PRIVATE Boost::iostreams zlib-ng::zlib)
-# add_custom_command(
-#         TARGET starsurvey POST_BUILD
-#         COMMAND ${CMAKE_COMMAND} -E copy_directory
-#                 ${CMAKE_CURRENT_SOURCE_DIR}/res
-#                 ${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/res)
+target_link_libraries(ponder_dblp PRIVATE zlib-ng::zlib)
 
-# Install vcpkg libraries
-# X_VCPKG_APPLOCAL_DEPS_INSTALL currently does only work for windows, in addition only actually used dll's are
-# installed. This is a problem for libraries that load dll's dynamically on runtime (.i.e. ospray).
-# Therefore, we just copy all vcpkg libraries to our install dir, until vcpkg may has a better option in future.
 if (WIN32)
   install(DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/vcpkg_installed/x64-windows/$<$<CONFIG:Debug>:debug/>bin/
     DESTINATION "${CMAKE_INSTALL_BINDIR}"
@@ -68,9 +55,3 @@ else ()
     DESTINATION "${CMAKE_INSTALL_LIBDIR}"
     FILES_MATCHING PATTERN "*.so*")
 endif ()
-
-# add_custom_command(
-#         TARGET Lactea POST_BUILD
-#         COMMAND ${CMAKE_COMMAND} -E copy_directory
-#                 ${CMAKE_CURRENT_SOURCE_DIR}/res
-#                 ${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/res)

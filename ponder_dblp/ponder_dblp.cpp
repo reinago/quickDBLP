@@ -16,15 +16,8 @@
 // is it better collect everything per thread and merge afterward? ID merging would be a headache
 #define USE_THREAD_POOL 1
 
-#ifndef USE_BOOST_IOSTREAMS
 #define WITH_GZFILEOP
 #include <zlib-ng.h>
-#else
-#include <boost/iostreams/filtering_stream.hpp>
-#include <boost/iostreams/filter/gzip.hpp>
-#include <boost/iostreams/device/file.hpp>
-#include <boost/iostreams/device/file_descriptor.hpp>
-#endif
 
 #include "InMemDB.hpp"
 #include "ThreadPool.hpp"
@@ -315,7 +308,6 @@ void dumpData() {
 	papersAuthorsFile.close();
 }
 
-#ifndef USE_BOOST_IOSTREAMS
 void checkGZProgress(uint64_t lineCount, gzFile file, uint64_t total) {
 	if (lineCount % 1000000 == 0) {
 		auto pos = zng_gztell(file);
@@ -324,14 +316,6 @@ void checkGZProgress(uint64_t lineCount, gzFile file, uint64_t total) {
 		}
 	}
 }
-#else
-void checkBOOSTProgress(uint64_t lineCount, boost::iostreams::file_descriptor& fd, uint64_t total) {
-	if (lineCount % 100000 == 0) {
-		std::streampos pos = fd.seek(0, std::ios::cur);
-		checkProgress(static_cast<uint64_t>(pos), total);
-	}
-}
-#endif
 
 bool checkLockFile(const std::string& lockFilePath) {
 	if (std::filesystem::exists(lockFilePath)) {
@@ -370,15 +354,6 @@ int main() {
 		std::vector<char> hugebuf;
 		hugebuf.resize(1024 * 1024 * 256);
 
-#ifdef USE_BOOST_IOSTREAMS
-		boost::iostreams::filtering_istream inputFile;
-		inputFile.push(boost::iostreams::gzip_decompressor());
-		auto fd = boost::iostreams::file_descriptor(inputFilePath);
-		inputFile.push(fd);
-		auto fd2 = boost::iostreams::file_descriptor(inputFilePath);
-		fd2.seek(0, std::ios::end);
-		std::streampos fileSizeBOOST = fd2.seek(0, std::ios::cur);
-#else
 		uint64_t fileSizeGZ = 0;
 		auto file = zng_gzopen(inputFilePath.c_str(), "rb");
 		{
@@ -399,7 +374,6 @@ int main() {
 		}
 		
 		file = zng_gzopen(inputFilePath.c_str(), "rb");
-#endif
 		{
 			Timer timer("Processing database dump...");
 			// Process file
@@ -410,14 +384,9 @@ int main() {
 			ParserState parserState, oldState;
 			std::vector<std::string> paperBuffer;
 
-#ifdef USE_BOOST_IOSTREAMS
-			while (std::getline(inputFile, line)) {
-				checkBOOSTProgress(++lineCount, fd, fileSizeBOOST);
-#else
 			while (zng_gzgets(file, hugebuf.data(), hugebuf.size()) != nullptr) {
 				line = hugebuf.data();
 				checkGZProgress(++lineCount, file, fileSizeGZ);
-#endif
 				parserState.checkForStateChange(line);
 				if (parserState != oldState) {
 					if (oldState != ParserState::Searching) {
@@ -446,9 +415,6 @@ int main() {
 		}
 		std::cout << "saving CSVs..." << std::endl;
 		dumpData();
-#ifndef USE_BOOST_IOSTREAMS
-		zng_gzclose(file);
-#endif
 	} catch (const std::exception& e) {
 		printError("Exception: " + std::string(e.what()));
 		removeLockFile(lockFilePath);
