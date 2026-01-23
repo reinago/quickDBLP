@@ -26,9 +26,10 @@
 #include <boost/iostreams/device/file_descriptor.hpp>
 #endif
 
-#include "ThreadSafeIDGenerator.hpp"
 #include "InMemDB.hpp"
 #include "ThreadPool.hpp"
+#include "ThreadSafeIDGenerator.hpp"
+#include "Timer.hpp"
 
 // Utility functions for logging
 enum class LogLevel { None, Error, Warning, Info };
@@ -251,6 +252,26 @@ int processPaperBuffer(std::vector<std::string> buf, ParserState::Value paperTyp
 	return 0;
 }
 
+void checkProgress(uint64_t current, uint64_t total) {
+	static uint64_t lastProgress = 0;
+	const int barWidth = 70;
+
+	if (current - lastProgress > 1) {
+		auto progress = static_cast<double>(current) / total;
+		std::cout << "[";
+		int pos = barWidth * progress;
+		for (int i = 0; i < barWidth; ++i) {
+			if (i < pos) std::cout << "=";
+			else if (i == pos) std::cout << ">";
+			else std::cout << " ";
+		}
+		std::cout << "] " << std::setfill(' ') << std::setw(3) << int(progress * 100.0) << " %\r";
+		//std::cout.flush();
+
+		lastProgress = current;
+	}
+}
+
 void dumpData() {
 	// File streams
 	std::ofstream papersFile("dblp_papers.csv");
@@ -262,17 +283,31 @@ void dumpData() {
 	authorsFile << "NumericID\tDBLP\tName\tORCID\n";
 	papersAuthorsFile << "PaperID\tAuthorID\n";
 
-	for (uint32_t p = 1; p < papersToNumbers.getMaxID(); ++p) {
+	std::cout << "Dumping papers..." << std::endl;
+	for (auto p = 1; p < papersToNumbers.getMaxID(); ++p) {
+		if (p % 100000 == 0) {
+			checkProgress(p, papersToNumbers.getMaxID());
+		}
 		auto paper = paperDB.getItem(p);
 		papersFile << p << "\t" << paper.id << "\t" << paper.title << "\t" << unsigned(paper.type) << "\t" << paper.year << "\n";
 	}
-	for (uint32_t a = 1; a < authorsToNumbers.getMaxID(); ++a) {
+	std::cout << std::endl << "Dumping authors..." << std::endl;
+	for (auto a = 1; a < authorsToNumbers.getMaxID(); ++a) {
+		if (a % 100000 == 0) {
+			checkProgress(a, authorsToNumbers.getMaxID());
+		}
 		auto author = authorDB.getItem(a);
 		authorsFile << a << "\t" << author.id << "\t" << author.name << "\t" << author.orcid << "\n";
 	}
-	for (auto it = papersAndAuthorsDB.begin(); it != papersAndAuthorsDB.end(); ++it) {
-		papersAuthorsFile << it->first << "\t" << it->second << "\n";
+	std::cout << std::endl << "Dumping relations..." << std::endl;
+	for (auto r = 1; r < papersAndAuthorsDB.size(); ++r) {
+		if (r % 100000 == 0) {
+			checkProgress(r, papersAndAuthorsDB.size());
+		}
+		auto link = papersAndAuthorsDB.getItem(r);
+		papersAuthorsFile << link.first << "\t" << link.second << "\n";
 	}
+	std::cout << std::endl << "Dumping completed." << std::endl;
 
 	// Close files
 	papersFile.close();
@@ -280,29 +315,9 @@ void dumpData() {
 	papersAuthorsFile.close();
 }
 
-void checkProgress(uint64_t current, uint64_t total) {
-	static uint64_t lastProgress = 0;
-	const int barWidth = 70;
-
-	if (current - lastProgress > 10000000) {
-		auto progress = static_cast<double>(current) / total;
-		std::cout << "[";
-		int pos = barWidth * progress;
-		for (int i = 0; i < barWidth; ++i) {
-			if (i < pos) std::cout << "=";
-			else if (i == pos) std::cout << ">";
-			else std::cout << " ";
-		}
-		std::cout << "] " << std::setfill(' ') << std::setw(3) << int(progress * 100.0) << " %\r";
-		std::cout.flush();
-
-		lastProgress = current;
-	}
-}
-
 #ifndef USE_BOOST_IOSTREAMS
 void checkGZProgress(uint64_t lineCount, gzFile file, uint64_t total) {
-	if (lineCount % 100000 == 0) {
+	if (lineCount % 1000000 == 0) {
 		auto pos = zng_gztell(file);
 		if (pos > -1) {
 			checkProgress(static_cast<uint64_t>(pos), total);
@@ -352,7 +367,6 @@ int main() {
 			return 1;
 		}
 
-		std::cout << "Checking database size...";
 		std::vector<char> hugebuf;
 		hugebuf.resize(1024 * 1024 * 256);
 
@@ -365,65 +379,71 @@ int main() {
 		fd2.seek(0, std::ios::end);
 		std::streampos fileSizeBOOST = fd2.seek(0, std::ios::cur);
 #else
-		auto file = zng_gzopen(inputFilePath.c_str(), "rb");
-		if (!file) {
-			std::cerr << "Failed to open file with zlib: " << inputFilePath << "\n";
-			removeLockFile(lockFilePath);
-			return 1;
-		}
 		uint64_t fileSizeGZ = 0;
-		int numRead = 0;
-		while ((numRead = zng_gzread(file, hugebuf.data(), hugebuf.size())) > 0) {
-			fileSizeGZ += numRead;
+		auto file = zng_gzopen(inputFilePath.c_str(), "rb");
+		{
+			Timer timer("Checking database size...");
+			if (!file) {
+				std::cerr << "Failed to open file with zlib: " << inputFilePath << "\n";
+				removeLockFile(lockFilePath);
+				return 1;
+			}
+			int numRead = 0;
+			// start timer
+
+			while ((numRead = zng_gzread(file, hugebuf.data(), hugebuf.size())) > 0) {
+				fileSizeGZ += numRead;
+			}
+			zng_gzclose(file);
+			std::cout << "File size (zlib): " << fileSizeGZ << " bytes\n";
 		}
-		zng_gzclose(file);
-		std::cout << "File size (zlib): " << fileSizeGZ << " bytes\n";
 		
 		file = zng_gzopen(inputFilePath.c_str(), "rb");
 #endif
-
-		// Process file
-		ThreadPool threadPool(std::thread::hardware_concurrency() * 2);
-		std::string line;
-		uint64_t lineCount = 0;
-		int state = 0; // 0 = searching, 1 = inproceedings, 3 = article
-		ParserState parserState, oldState;
-		std::vector<std::string> paperBuffer;
-		std::cout << "Processing database dump..." << std::endl;
+		{
+			Timer timer("Processing database dump...");
+			// Process file
+			ThreadPool threadPool(std::thread::hardware_concurrency() * 2);
+			std::string line;
+			uint64_t lineCount = 0;
+			int state = 0; // 0 = searching, 1 = inproceedings, 3 = article
+			ParserState parserState, oldState;
+			std::vector<std::string> paperBuffer;
 
 #ifdef USE_BOOST_IOSTREAMS
-		while (std::getline(inputFile, line)) {
-			checkBOOSTProgress(++lineCount, fd, fileSizeBOOST);
+			while (std::getline(inputFile, line)) {
+				checkBOOSTProgress(++lineCount, fd, fileSizeBOOST);
 #else
-		while (zng_gzgets(file, hugebuf.data(), hugebuf.size()) != nullptr) {
-			line = hugebuf.data();
-			checkGZProgress(++lineCount, file, fileSizeGZ);
+			while (zng_gzgets(file, hugebuf.data(), hugebuf.size()) != nullptr) {
+				line = hugebuf.data();
+				checkGZProgress(++lineCount, file, fileSizeGZ);
 #endif
-			parserState.checkForStateChange(line);
-			if (parserState != oldState) {
-				if (oldState != ParserState::Searching) {
-					printInfo("End of " + oldState.getEntity() + " entry");
-					paperBuffer.push_back(line);
-					ParserState::Value paperType = oldState;
+				parserState.checkForStateChange(line);
+				if (parserState != oldState) {
+					if (oldState != ParserState::Searching) {
+						printInfo("End of " + oldState.getEntity() + " entry");
+						paperBuffer.push_back(line);
+						ParserState::Value paperType = oldState;
 #ifdef USE_THREAD_POOL
-					threadPool.enqueue([paperBuffer, paperType]() { processPaperBuffer(paperBuffer, paperType); });
+						threadPool.enqueue([paperBuffer, paperType]() { processPaperBuffer(paperBuffer, paperType); });
 #else
-					processPaperBuffer(paperBuffer, paperType);
+						processPaperBuffer(paperBuffer, paperType);
 #endif
+					} else {
+						printInfo("Found " + parserState.getEntity() + " entry");
+						paperBuffer.clear();
+						paperBuffer.push_back(line);
+					}
+					oldState = parserState;
 				} else {
-					printInfo("Found " + parserState.getEntity() + " entry");
-					paperBuffer.clear();
-					paperBuffer.push_back(line);
-				}
-				oldState = parserState;
-			} else {
-				if (parserState != ParserState::Searching) {
-					paperBuffer.push_back(line);
+					if (parserState != ParserState::Searching) {
+						paperBuffer.push_back(line);
+					}
 				}
 			}
+			std::cout << std::endl << "Waiting for threads to finish parsing..." << std::endl;
+			threadPool.waitForAll();
 		}
-		std::cout << "Waiting for threads to finish parsing..." << std::endl;
-		threadPool.waitForAll();
 		std::cout << "saving CSVs..." << std::endl;
 		dumpData();
 #ifndef USE_BOOST_IOSTREAMS

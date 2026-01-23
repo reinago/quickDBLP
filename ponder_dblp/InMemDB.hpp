@@ -1,4 +1,5 @@
 #pragma once
+#include <shared_mutex>
 
 template <typename IDType, typename EntryType>
 class InMemDB {
@@ -40,6 +41,17 @@ public:
 	}
 	auto end() const {
 		return links_.end();
+	}
+	size_t size() const {
+		std::shared_lock<std::shared_mutex> readLock(mutex_); // Lock for reading
+		return links_.size();
+	}
+	std::pair<IDType, IDType> getItem(size_t index) const {
+		std::shared_lock<std::shared_mutex> readLock(mutex_); // Lock for reading
+		if (index < links_.size()) {
+			return links_[index];
+		}
+		throw std::out_of_range("Index out of range");
 	}
 
 private:
