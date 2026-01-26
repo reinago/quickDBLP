@@ -14,7 +14,7 @@ compile parser (you need to have CMake installed and a 64-bit dev environment ac
 cd ponder_dblp
 mkdir build
 cmake --preset=x64-release .
-cmake --build --preset=x64-release
+cmake --build --preset=x64-release --target install
 cd ..
 ```
 get/refresh DBLP entries
@@ -23,7 +23,7 @@ python refresh_rdf_cache.py
 ```
 parse and move snapshot into place
 ```
-ponder_dblp\build\x64-release\ponder_dblp.exe
+ponder_dblp\install\x64-release\bin\ponder_dblp.exe
 move *.csv snapshot
 ```
 open and run `query_dblp.ipynb`
