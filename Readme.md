@@ -9,7 +9,7 @@ python -m venv .venv
 .venv\Scripts\Activate.(bat|ps1|sh) # depending on your shell!
 pip install -r requirements.txt
 ```
-compile parser (you need to have CMake installed and a dev environment active, e.g. using a Visual Studio Developer Command Prompt)
+compile parser (you need to have CMake installed and a 64-bit dev environment active, e.g. using a Visual Studio Developer Command Prompt)
 ```
 cd ponder_dblp
 mkdir build
