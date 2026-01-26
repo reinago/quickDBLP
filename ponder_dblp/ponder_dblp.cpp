@@ -10,10 +10,10 @@
 #include <regex>
 #include <filesystem>
 
-// #define USE_BOOST_IOSTREAMS
 // TODO
 // profile the code
 // is it better collect everything per thread and merge afterward? ID merging would be a headache
+#define DEBUGGING 1
 #define USE_THREAD_POOL 1
 
 #define WITH_GZFILEOP
@@ -361,23 +361,30 @@ void removeLockFile(const std::string& lockFilePath) {
 }
 
 int main() {
+#ifdef DEBUGGING
 	// hack for broken visual studio cwd
-	//std::filesystem::current_path("h:\\src\\quickDBLP");
+	std::filesystem::current_path("u:\\src\\quickDBLP");
+#endif
 
 	//const std::string inputFilePath = "mini.rdf.gz";
 	const std::string inputFilePath = "dblp.rdf.gz";
 	const std::string lockFilePath = inputFilePath + ".lock";
 
 	try {
+#ifndef DEBUGGING
 		if (!checkLockFile(lockFilePath)) {
 			return 1;
 		}
+#endif
 
 		std::vector<char> hugebuf;
 		hugebuf.resize(1024 * 1024 * 256);
 
-		uint64_t fileSizeGZ = 0;
 		auto file = zng_gzopen(inputFilePath.c_str(), "rb");
+#ifdef DEBUGGING
+		uint64_t fileSizeGZ = 38980527145;
+#else
+		uint64_t fileSizeGZ = 0;
 		{
 			Timer timer("Checking database size...");
 			if (!file) {
@@ -394,6 +401,7 @@ int main() {
 			zng_gzclose(file);
 			std::cout << "File size (zlib): " << fileSizeGZ << " bytes\n";
 		}
+#endif
 		
 		file = zng_gzopen(inputFilePath.c_str(), "rb");
 		{
