@@ -182,7 +182,7 @@ pugi::xml_node check_child(pugi::xml_node n, std::string name) {
 
 std::string check_attribute(pugi::xml_node n, std::string name) {
 	auto r = n.attribute(name);
-	if (r == nullptr) throw std::invalid_argument("could not find '" + name + "' in '" + n.name() + "'\n" + dump_node(n));
+	if (r == nullptr) return "";
 	return r.value();
 };
 
@@ -221,6 +221,10 @@ int processPaperBuffer(std::vector<std::string> buf, ParserState::Value paperTyp
 
 	auto pub = *doc.children().begin(); //doc.child("dblp:" + ParserState::getEntityFromState(paperType));
 	currPaperID = check_attribute(pub, "rdf:about");
+	if (currPaperID.empty()) {
+		printWarning("No ID found, skipping:\n" + dump_node(pub));
+		return 0;
+	}
 	printInfo("Current ID: " + currPaperID);
 	auto res = papersToNumbers.getOrCreateID(currPaperID);
 	currPaperNumericID = std::get<0>(res);
@@ -230,32 +234,47 @@ int processPaperBuffer(std::vector<std::string> buf, ParserState::Value paperTyp
 		auto res = check_resource(author);
 		currAuthors.push_back(res);
 	}
-	for (pugi::xml_node sig : pub.children("dblp:hasSignature")) {
-		auto sig_content = check_child(sig, "dblp:AuthorSignature");
-		authorID = check_resource(check_child(sig_content, "dblp:signatureCreator"));
-		try {
-			authorOrcid = check_resource(check_child(sig_content, "dblp:signatureOrcid"));
-		} catch (const std::invalid_argument&) {
-			authorOrcid = "";
+	for (pugi::xml_node sig: pub.children("dblp:hasSignature")) {
+		for (pugi::xml_node sig_content : sig.children("dblp:AuthorSignature")) {
+			authorID = check_resource(check_child(sig_content, "dblp:signatureCreator"));
+			try {
+				authorOrcid = check_resource(check_child(sig_content, "dblp:signatureOrcid"));
+			} catch (const std::invalid_argument&) {
+				authorOrcid = "";
+			}
+			authorName = check_child(sig_content, "dblp:signatureDblpName").child_value();
+			printInfo("Found creator: " + authorID + ", " + authorOrcid + ", " + authorName);
+			currCreators.emplace_back(authorID, authorOrcid, authorName);
 		}
-		authorName = check_child(sig_content, "dblp:signatureDblpName").child_value();
-		printInfo("Found creator: " + authorID + ", " + authorOrcid + ", " + authorName);
-		currCreators.emplace_back(authorID, authorOrcid, authorName);
 	}
 
 	if (currAuthors.size() != currCreators.size()) {
 		printError("Number of authors and creators do not match for paper " + currPaperID + ": " +
 			std::to_string(currAuthors.size()) + " vs " + std::to_string(currCreators.size()));
+		return 0;
 	}
 	if (currAuthors.size() == 0) {
 		printInfo("No authors found for paper " + currPaperID + ", skipping");
 		// printWarning("\n" + dump_node(pub));
 		return 0;
 	}
-	currTitle = check_child(pub, "dblp:title").child_value();
+	auto child_title = pub.child("dblp:title");
+	if (child_title == nullptr) {
+		printWarning("No title found for paper " + currPaperID + ", skipping\n" + dump_node(pub));
+		return 0;
+	}
+	currTitle = child_title.child_value();
 	printInfo("Current Title: " + currTitle);
 
-	currYear = static_cast<uint16_t>(std::stoi(check_child(pub, "dblp:yearOfPublication").child_value()));
+	auto child_year = pub.child("dblp:yearOfPublication");
+	if (child_year == nullptr) {
+		child_year = pub.child("dblp:yearOfEvent");
+		if (child_year == nullptr) {
+			printWarning("No year found for paper " + currPaperID + ", skipping\n" + dump_node(pub));
+			return 0;
+		}
+	}
+	currYear = static_cast<uint16_t>(std::stoi(child_year.child_value()));
 	printInfo("Current Year: " + std::to_string(currYear));
 
 	for (const auto& [authorID, authorOrcid, authorName] : currCreators) {
