@@ -13,7 +13,7 @@
 // TODO
 // profile the code
 // is it better collect everything per thread and merge afterward? ID merging would be a headache
-#define DEBUGGING 1
+// #define DEBUGGING 1
 #define USE_THREAD_POOL 1
 
 #define WITH_GZFILEOP
