@@ -226,9 +226,6 @@ int processPaperBuffer(std::vector<std::string> buf, ParserState::Value paperTyp
 		return 0;
 	}
 	printInfo("Current ID: " + currPaperID);
-	auto res = papersToNumbers.getOrCreateID(currPaperID);
-	currPaperNumericID = std::get<0>(res);
-	printInfo("Assigned number " + std::to_string(currPaperNumericID) + " to paper ID " + currPaperID);
 
 	for (pugi::xml_node author: pub.children("dblp:authoredBy")) {
 		auto res = check_resource(author);
@@ -237,10 +234,11 @@ int processPaperBuffer(std::vector<std::string> buf, ParserState::Value paperTyp
 	for (pugi::xml_node sig: pub.children("dblp:hasSignature")) {
 		for (pugi::xml_node sig_content : sig.children("dblp:AuthorSignature")) {
 			authorID = check_resource(check_child(sig_content, "dblp:signatureCreator"));
-			try {
-				authorOrcid = check_resource(check_child(sig_content, "dblp:signatureOrcid"));
-			} catch (const std::invalid_argument&) {
+			auto orc = sig_content.child("dblp:signatureOrcid");
+			if (orc == nullptr) {
 				authorOrcid = "";
+			} else {
+				authorOrcid = check_resource(orc);
 			}
 			authorName = check_child(sig_content, "dblp:signatureDblpName").child_value();
 			printInfo("Found creator: " + authorID + ", " + authorOrcid + ", " + authorName);
@@ -276,6 +274,10 @@ int processPaperBuffer(std::vector<std::string> buf, ParserState::Value paperTyp
 	}
 	currYear = static_cast<uint16_t>(std::stoi(child_year.child_value()));
 	printInfo("Current Year: " + std::to_string(currYear));
+
+	auto res = papersToNumbers.getOrCreateID(currPaperID);
+	currPaperNumericID = std::get<0>(res);
+	printInfo("Assigned number " + std::to_string(currPaperNumericID) + " to paper ID " + currPaperID);
 
 	for (const auto& [authorID, authorOrcid, authorName] : currCreators) {
 		int realID = checkAuthor(authorID, authorOrcid, authorName);
