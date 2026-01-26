@@ -25,8 +25,6 @@ if (NOT vcpkg-download_POPULATED)
 endif ()
 
 # option(X_VCPKG_APPLOCAL_DEPS_INSTALL "" ON) # Does currently not not work as expected, see comment on manual install below!
-#set(VCPKG_OVERLAY_PORTS "${mm_empty_ports_dir}${CMAKE_CURRENT_LIST_DIR}/cmake/vcpkg_ports")
-#set(VCPKG_OVERLAY_TRIPLETS "${CMAKE_CURRENT_LIST_DIR}/cmake/vcpkg_triplets") # We are using triplets with VCPKG_DISABLE_COMPILER_TRACKING set (on Windows).
 set(VCPKG_BOOTSTRAP_OPTIONS "-disableMetrics") # Disable Telemetry
 set(VCPKG_INSTALL_OPTIONS "--clean-after-build" "--no-print-usage") # Build dirs get quite large and are usually only needed for debugging new ports.
 set(CMAKE_TOOLCHAIN_FILE "${CMAKE_CURRENT_BINARY_DIR}/_deps/vcpkg-download-src/scripts/buildsystems/vcpkg.cmake" CACHE STRING "Vcpkg toolchain file")
@@ -46,13 +44,14 @@ add_executable(ponder_dblp "${CMAKE_CURRENT_SOURCE_DIR}/ponder_dblp.cpp")
 
 target_include_directories(ponder_dblp PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(ponder_dblp PRIVATE zlib-ng::zlib pugixml::pugixml)
+install(TARGETS ponder_dblp DESTINATION bin)
 
 if (WIN32)
   install(DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/vcpkg_installed/x64-windows/$<$<CONFIG:Debug>:debug/>bin/
-    DESTINATION "${CMAKE_INSTALL_BINDIR}"
+    DESTINATION bin
     FILES_MATCHING PATTERN "*.dll" PATTERN "*.pdb")
 else ()
   install(DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/vcpkg_installed/x64-linux/$<$<CONFIG:Debug>:debug/>lib/
-    DESTINATION "${CMAKE_INSTALL_LIBDIR}"
+    DESTINATION lib
     FILES_MATCHING PATTERN "*.so*")
 endif ()

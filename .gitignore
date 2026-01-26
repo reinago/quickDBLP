@@ -176,3 +176,5 @@ cython_debug/
 ponder_dblp/.vs/
 *.csv
 *.rdf*
+
+ponder_dblp/install/
