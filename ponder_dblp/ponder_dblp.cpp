@@ -19,6 +19,8 @@
 #define WITH_GZFILEOP
 #include <zlib-ng.h>
 
+#include <pugixml.hpp>
+
 #include "InMemDB.hpp"
 #include "ThreadPool.hpp"
 #include "ThreadSafeIDGenerator.hpp"
@@ -166,6 +168,28 @@ int checkAuthor(const std::string& authorID, const std::string& authorOrcid, con
 	return realID;
 }
 
+std::string dump_node(pugi::xml_node n) {
+	std::ostringstream oss;
+	n.print(oss);
+	return oss.str();
+}
+
+pugi::xml_node check_child(pugi::xml_node n, std::string name) {
+	auto c = n.child(name);
+	if (c == nullptr) throw std::invalid_argument("could not find '" + name + "' in '" + n.name() + "'\n" + dump_node(n));
+	return c;
+};
+
+std::string check_attribute(pugi::xml_node n, std::string name) {
+	auto r = n.attribute(name);
+	if (r == nullptr) throw std::invalid_argument("could not find '" + name + "' in '" + n.name() + "'\n" + dump_node(n));
+	return r.value();
+};
+
+std::string check_resource(pugi::xml_node n) {
+	return check_attribute(n, "rdf:resource");
+};
+
 int processPaperBuffer(std::vector<std::string> buf, ParserState::Value paperType) {
 	static std::regex idRegex(R"q(rdf:about="([^"]+)")q");
 	static std::regex titleRegex(R"q(<dblp:title>([^<]+)</dblp:title>)q");
@@ -185,63 +209,61 @@ int processPaperBuffer(std::vector<std::string> buf, ParserState::Value paperTyp
 	uint16_t currYear = 0;
 	std::string authorID, authorOrcid, authorName;
 
-	bool iteratingAuthors = false;
+	std::ostringstream imploded;
+	std::copy(buf.begin(), buf.end(),
+		std::ostream_iterator<std::string>(imploded, "\n"));
+	pugi::xml_document doc;
+	auto result = doc.load_string(imploded.str().c_str());
 
-	for (const auto& line : buf) {
-		if (line.find(ParserState::getStartSnippet(paperType)) == 0) {
-			// started a paper entry
-			if (std::regex_search(line, match, idRegex)) {
-				currPaperID = match[1];
-				printInfo("Current ID: " + currPaperID);
-				auto res = papersToNumbers.getOrCreateID(currPaperID);
-				currPaperNumericID = std::get<0>(res);
-				printInfo("Assigned number " + std::to_string(currPaperNumericID) + " to paper ID " + currPaperID);
-			} else {
-				printError("No ID found in entry: " + line);
-			}
-		} else if (line.find(ParserState::getEndSnippet(paperType)) == 0) {
-			// end of the paper entry
-			if (currAuthors.size() != currCreators.size()) {
-				printError("Number of authors and creators do not match for paper " + currPaperID + ": " +
-					std::to_string(currAuthors.size()) + " vs " + std::to_string(currCreators.size()));
-			} else {
-				for (const auto& [authorID, authorOrcid, authorName] : currCreators) {
-					int realID = checkAuthor(authorID, authorOrcid, authorName);
-					papersAndAuthorsDB.storeLink(currPaperNumericID, realID);
-				}
-			}
-			paperDB.storeItem(currPaperNumericID, { currPaperID, currTitle, paperType, currYear });
-		} else {
-			// analyze the paper entry
-			if (std::regex_search(line, match, titleRegex)) {
-				currTitle = match[1];
-				printInfo("Current Title: " + currTitle);
-			} else if (std::regex_search(line, match, yearRegex)) {
-				currYear = static_cast<uint16_t>(std::stoi(match[1]));
-				printInfo("Current Year: " + std::to_string(currYear));
-			} else if (std::regex_search(line, match, authorRegex)) {
-				printInfo("Found author ID: " + match[1].str());
-				currAuthors.push_back(match[1]);
-			} else if (line.find("<dblp:AuthorSignature") != std::string::npos) {
-				iteratingAuthors = true;
-			}
-			if (iteratingAuthors) {
-				if (line.find("</dblp:AuthorSignature") != std::string::npos) {
-					iteratingAuthors = false;
-					currCreators.emplace_back(authorID, authorOrcid, authorName);
-					printInfo("Found creator: " + authorID + ", " + authorOrcid + ", " + authorName);
-				} else {
-					if (std::regex_search(line, match, signatureCreatorRegex)) {
-						authorID = match[1];
-					} else if (std::regex_search(line, match, signatureOrcidRegex)) {
-						authorOrcid = match[1];
-					} else if (std::regex_search(line, match, signatureNameRegex)) {
-						authorName = match[1];
-					}
-				}
-			}
+	if (result.status != pugi::status_ok) {
+		throw std::invalid_argument("could not parse publication: " + buf[0]);
+	}
+
+	auto pub = *doc.children().begin(); //doc.child("dblp:" + ParserState::getEntityFromState(paperType));
+	currPaperID = check_attribute(pub, "rdf:about");
+	printInfo("Current ID: " + currPaperID);
+	auto res = papersToNumbers.getOrCreateID(currPaperID);
+	currPaperNumericID = std::get<0>(res);
+	printInfo("Assigned number " + std::to_string(currPaperNumericID) + " to paper ID " + currPaperID);
+
+	for (pugi::xml_node author: pub.children("dblp:authoredBy")) {
+		auto res = check_resource(author);
+		currAuthors.push_back(res);
+	}
+	for (pugi::xml_node sig : pub.children("dblp:hasSignature")) {
+		auto sig_content = check_child(sig, "dblp:AuthorSignature");
+		authorID = check_resource(check_child(sig_content, "dblp:signatureCreator"));
+		try {
+			authorOrcid = check_resource(check_child(sig_content, "dblp:signatureOrcid"));
+		} catch (const std::invalid_argument&) {
+			authorOrcid = "";
 		}
-	} 
+		authorName = check_child(sig_content, "dblp:signatureDblpName").child_value();
+		printInfo("Found creator: " + authorID + ", " + authorOrcid + ", " + authorName);
+		currCreators.emplace_back(authorID, authorOrcid, authorName);
+	}
+
+	if (currAuthors.size() != currCreators.size()) {
+		printError("Number of authors and creators do not match for paper " + currPaperID + ": " +
+			std::to_string(currAuthors.size()) + " vs " + std::to_string(currCreators.size()));
+	}
+	if (currAuthors.size() == 0) {
+		printInfo("No authors found for paper " + currPaperID + ", skipping");
+		// printWarning("\n" + dump_node(pub));
+		return 0;
+	}
+	currTitle = check_child(pub, "dblp:title").child_value();
+	printInfo("Current Title: " + currTitle);
+
+	currYear = static_cast<uint16_t>(std::stoi(check_child(pub, "dblp:yearOfPublication").child_value()));
+	printInfo("Current Year: " + std::to_string(currYear));
+
+	for (const auto& [authorID, authorOrcid, authorName] : currCreators) {
+		int realID = checkAuthor(authorID, authorOrcid, authorName);
+		papersAndAuthorsDB.storeLink(currPaperNumericID, realID);
+	}
+	paperDB.storeItem(currPaperNumericID, { currPaperID, currTitle, paperType, currYear });
+
 	return 0;
 }
 

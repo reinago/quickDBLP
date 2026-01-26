@@ -39,12 +39,13 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_VERBOSE_MAKEFILE ON)
 
 find_package(zlib-ng CONFIG REQUIRED)
+find_package(pugixml CONFIG REQUIRED)
 
 
 add_executable(ponder_dblp "${CMAKE_CURRENT_SOURCE_DIR}/ponder_dblp.cpp")
 
 target_include_directories(ponder_dblp PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(ponder_dblp PRIVATE zlib-ng::zlib)
+target_link_libraries(ponder_dblp PRIVATE zlib-ng::zlib pugixml::pugixml)
 
 if (WIN32)
   install(DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/vcpkg_installed/x64-windows/$<$<CONFIG:Debug>:debug/>bin/
