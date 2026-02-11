@@ -27,7 +27,7 @@ jobs:
           cmake --preset=x64-release .
 
       - name: Build
-        run: >
+        run: |
           cd ponder_dblp
           cmake --build --preset=x64-release --target install
 
