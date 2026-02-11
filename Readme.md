@@ -12,7 +12,6 @@ pip install -r requirements.txt
 compile parser (you need to have CMake installed and a 64-bit dev environment active, e.g. using a Visual Studio Developer Command Prompt)
 ```
 cd ponder_dblp
-mkdir build
 cmake --preset=x64-release .
 cmake --build --preset=x64-release --target install
 cd ..
