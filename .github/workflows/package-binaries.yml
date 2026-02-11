@@ -21,9 +21,10 @@ jobs:
       - name: Install Ninja
         uses: seanmiddleditch/gha-setup-ninja@v4
 
+
       - name: Configure CMake
-        run: >
-          cd poinder_dblp
+        run: |
+          cd ponder_dblp
           cmake --preset=x64-release .
 
       - name: Build
