@@ -16,7 +16,7 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-compile parser (you need to have CMake installed and a 64-bit dev environment active, e.g. using a Visual Studio Developer Command Prompt)
+either fetch the current binaries from [here](https://github.com/reinago/quickDBLP/releases) or compile the parser yourself (you need to have CMake installed and a 64-bit development environment active, e.g. using a Visual Studio Developer Command Prompt)
 ```
 cd ponder_dblp
 cmake --preset=x64-release .
