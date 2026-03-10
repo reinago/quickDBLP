@@ -3,12 +3,19 @@
 Utilities for local checking of author conflicts.
 
 ## TL;DR
-prepare python env
+prepare python env using `uv` (recommended)
+```
+pip install uv
+uv venv
+uv sync
+``` 
+OR, if you do not know/care about uv
 ```
 python -m venv .venv
 .venv\Scripts\Activate.(bat|ps1|sh) # depending on your shell!
 pip install -r requirements.txt
 ```
+
 compile parser (you need to have CMake installed and a 64-bit dev environment active, e.g. using a Visual Studio Developer Command Prompt)
 ```
 cd ponder_dblp
@@ -25,7 +32,7 @@ parse and move snapshot into place
 ponder_dblp\install\x64-release\bin\ponder_dblp.exe
 move *.csv snapshot
 ```
-open and run `query_dblp.ipynb`
+open and run `query_dblp.ipynb`, making sure to select the venv created above as the kernel!
 
 ## Description
 
