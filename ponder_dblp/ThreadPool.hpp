@@ -5,23 +5,29 @@
 
 class ThreadPool {
 public:
-	ThreadPool(size_t numThreads) {
-		for (size_t i = 0; i < numThreads; ++i) {
-			workers.emplace_back([this]() {
-				while (true) {
-					std::function<void()> task;
-					{
-						std::unique_lock<std::mutex> lock(queueMutex);
-						condition.wait(lock, [this]() { return stop || !tasks.empty(); });
-						if (stop && tasks.empty()) return;
-						task = std::move(tasks.front());
-						tasks.pop();
-					}
-					task();
-				}
-				});
-		}
-	}
+       ThreadPool(size_t numThreads) {
+               for (size_t i = 0; i < numThreads; ++i) {
+                       workers.emplace_back([this]() {
+                               while (true) {
+                                       std::function<void()> task;
+                                       {
+                                               std::unique_lock<std::mutex> lock(queueMutex);
+                                               condition.wait(lock, [this]() { return stop || !tasks.empty(); });
+                                               if (stop && tasks.empty()) return;
+                                               task = std::move(tasks.front());
+                                               tasks.pop();
+                                               ++activeTasks;
+                                       }
+                                       task();
+                                       {
+                                               std::unique_lock<std::mutex> lock(queueMutex);
+                                               --activeTasks;
+                                               condition.notify_all();
+                                       }
+                               }
+                       });
+               }
+       }
 
 	~ThreadPool() {
 		{
@@ -42,15 +48,16 @@ public:
 		condition.notify_one();
 	}
 
-	void waitForAll() {
-		std::unique_lock<std::mutex> lock(queueMutex);
-		condition.wait(lock, [this]() { return tasks.empty(); });
-	}
+       void waitForAll() {
+               std::unique_lock<std::mutex> lock(queueMutex);
+               condition.wait(lock, [this]() { return tasks.empty() && activeTasks == 0; });
+       }
 
 private:
-	std::vector<std::thread> workers;
-	std::queue<std::function<void()>> tasks;
-	std::mutex queueMutex;
-	std::condition_variable condition;
-	bool stop = false;
+       std::vector<std::thread> workers;
+       std::queue<std::function<void()>> tasks;
+       std::mutex queueMutex;
+       std::condition_variable condition;
+       bool stop = false;
+       size_t activeTasks = 0;
 };
