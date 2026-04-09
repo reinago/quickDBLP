@@ -308,11 +308,12 @@ void checkProgress(uint64_t current, uint64_t total) {
 	}
 }
 
-void dumpData() {
+void dumpData(const std::string& inputFilePath) {
 	// File streams
 	std::ofstream papersFile("dblp_papers.csv");
 	std::ofstream authorsFile("dblp_authors.csv");
 	std::ofstream papersAuthorsFile("dblp_papers_authors.csv");
+	std::ofstream metadataFile("dblp_metadata.json");
 
 	// Initialize files
 	papersFile << "NumericID\tDBLP\tTitle\tType\tYear\n";
@@ -345,10 +346,21 @@ void dumpData() {
 	}
 	std::cout << std::endl << "Dumping completed." << std::endl;
 
+	// get datetime of rdf file
+	auto lwt = std::filesystem::last_write_time(inputFilePath);
+	metadataFile << "{\n";
+	metadataFile << "  \"source_file\": \"" << inputFilePath << "\",\n";
+	metadataFile << "  \"source_file_last_write_time\": \"" << lwt << "\",\n";
+	metadataFile << "  \"total_papers\": " << papersToNumbers.getMaxID() - 1 << ",\n";
+	metadataFile << "  \"total_authors\": " << authorsToNumbers.getMaxID() - 1 << ",\n";
+	metadataFile << "  \"total_links\": " << papersAndAuthorsDB.size() - 1 << "\n";
+	metadataFile << "}\n";
+
 	// Close files
 	papersFile.close();
 	authorsFile.close();
 	papersAuthorsFile.close();
+	metadataFile.close();
 }
 
 void checkGZProgress(uint64_t lineCount, gzFile file, uint64_t total) {
@@ -461,11 +473,12 @@ int main() {
 					}
 				}
 			}
-			std::cout << std::endl << "Waiting for threads to finish parsing..." << std::endl;
+			std::cout << std::endl << "Waiting for threads to finish parsing... ";
 			threadPool.waitForAll();
+			std::cout << "Done." << std::endl;
 		}
 		std::cout << "saving CSVs..." << std::endl;
-		dumpData();
+		dumpData(inputFilePath);
 	} catch (const std::exception& e) {
 		printError("Exception: " + std::string(e.what()));
 		removeLockFile(lockFilePath);

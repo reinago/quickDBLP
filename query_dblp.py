@@ -8,12 +8,20 @@ from IPython.display import display
 from lxml import html
 import duckdb
 import uuid
+import json
+from datetime import datetime
 
 con = None
 init_notebook_mode(connected=True)
 
 
 def prepare_data(snapshot_dir):
+    meta = json.loads(open(f"{snapshot_dir}/dblp_metadata.json").read())
+    then = datetime.strptime(meta["source_file_last_write_time"][:26], "%Y-%m-%d %H:%M:%S.%f")
+    diff = datetime.now() - then
+    if diff.days > 10:
+        print(f"Warning: The data snapshot is {diff.days} days old. Consider updating it for the latest information.")
+
     global con
     con = duckdb.connect(database=':memory:', read_only=False)
     con.execute(f"create table authors as select * from read_csv('{snapshot_dir}/dblp_authors.csv')")
