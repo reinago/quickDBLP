@@ -17,6 +17,7 @@
 #define USE_THREAD_POOL 1
 
 #define WITH_GZFILEOP
+#include <set>
 #include <zlib-ng.h>
 
 #include <pugixml.hpp>
@@ -78,6 +79,9 @@ public:
 		Part,
 		Informal,
 		Data,
+		Reference,   // entries of reference works (encyclopedias, handbooks)
+		Editorship,  // edited volumes: the people are editors (dblp:editedBy), not authors
+		Withdrawn,
 		NUMBER_OF_PARSER_STATES
 	};
 
@@ -104,6 +108,12 @@ public:
 			return "Informal";
 		case Data:
 			return "Data";
+		case Reference:
+			return "Reference";
+		case Editorship:
+			return "Editorship";
+		case Withdrawn:
+			return "Withdrawn";
 		default:
 			return "Unknown";
 		}
@@ -245,12 +255,16 @@ int processPaperBuffer(std::vector<std::string> buf, ParserState::Value paperTyp
 	}
 	printInfo("Current ID: " + currPaperID);
 
-	for (pugi::xml_node author: pub.children("dblp:authoredBy")) {
-		auto res = check_resource(author);
-		currAuthors.push_back(res);
+	for (const char* personTag : { "dblp:authoredBy", "dblp:editedBy" }) {  // editors only occur in Editorship records
+		for (pugi::xml_node author : pub.children(personTag)) {
+			auto res = check_resource(author);
+			currAuthors.push_back(res);
+		}
 	}
 	for (pugi::xml_node sig: pub.children("dblp:hasSignature")) {
-		for (pugi::xml_node sig_content : sig.children("dblp:AuthorSignature")) {
+		for (pugi::xml_node sig_content : sig.children()) {
+			const std::string sigName = sig_content.name();
+			if (sigName != "dblp:AuthorSignature" && sigName != "dblp:EditorSignature") continue;
 			authorID = check_resource(check_child(sig_content, "dblp:signatureCreator"));
 			auto orc = sig_content.child("dblp:signatureOrcid");
 			if (orc == nullptr) {
@@ -297,9 +311,13 @@ int processPaperBuffer(std::vector<std::string> buf, ParserState::Value paperTyp
 	currPaperNumericID = std::get<0>(res);
 	printInfo("Assigned number " + std::to_string(currPaperNumericID) + " to paper ID " + currPaperID);
 
+	std::set<int> linkedAuthors;
 	for (const auto& [authorID, authorOrcid, authorName] : currCreators) {
 		int realID = checkAuthor(authorID, authorOrcid, authorName);
-		papersAndAuthorsDB.storeLink(currPaperNumericID, realID);
+		// DBLP sometimes lists the same person twice on a paper: store one link only
+		if (linkedAuthors.insert(realID).second) {
+			papersAndAuthorsDB.storeLink(currPaperNumericID, realID);
+		}
 	}
 	paperDB.storeItem(currPaperNumericID, { currPaperID, currTitle, paperType, currYear });
 
@@ -339,7 +357,7 @@ void dumpData(const std::string& inputFilePath) {
 	papersAuthorsFile << "PaperID\tAuthorID\n";
 
 	std::cout << "Dumping papers..." << std::endl;
-	for (auto p = 1; p < papersToNumbers.getMaxID(); ++p) {
+	for (uint32_t p = 1; p <= papersToNumbers.getMaxID(); ++p) {
 		if (p % 100000 == 0) {
 			checkProgress(p, papersToNumbers.getMaxID());
 		}
@@ -347,7 +365,7 @@ void dumpData(const std::string& inputFilePath) {
 		papersFile << p << "\t" << paper.id << "\t" << paper.title << "\t" << unsigned(paper.type) << "\t" << paper.year << "\n";
 	}
 	std::cout << std::endl << "Dumping authors..." << std::endl;
-	for (auto a = 1; a < authorsToNumbers.getMaxID(); ++a) {
+	for (uint32_t a = 1; a <= authorsToNumbers.getMaxID(); ++a) {
 		if (a % 100000 == 0) {
 			checkProgress(a, authorsToNumbers.getMaxID());
 		}
@@ -355,7 +373,7 @@ void dumpData(const std::string& inputFilePath) {
 		authorsFile << a << "\t" << author.id << "\t" << author.name << "\t" << author.orcid << "\n";
 	}
 	std::cout << std::endl << "Dumping relations..." << std::endl;
-	for (auto r = 1; r < papersAndAuthorsDB.size(); ++r) {
+	for (size_t r = 0; r < papersAndAuthorsDB.size(); ++r) {
 		if (r % 100000 == 0) {
 			checkProgress(r, papersAndAuthorsDB.size());
 		}
@@ -369,9 +387,9 @@ void dumpData(const std::string& inputFilePath) {
 	metadataFile << "{\n";
 	metadataFile << "  \"source_file\": \"" << inputFilePath << "\",\n";
 	metadataFile << "  \"source_file_last_write_time\": \"" << lwt << "\",\n";
-	metadataFile << "  \"total_papers\": " << papersToNumbers.getMaxID() - 1 << ",\n";
-	metadataFile << "  \"total_authors\": " << authorsToNumbers.getMaxID() - 1 << ",\n";
-	metadataFile << "  \"total_links\": " << papersAndAuthorsDB.size() - 1 << "\n";
+	metadataFile << "  \"total_papers\": " << papersToNumbers.getMaxID() << ",\n";
+	metadataFile << "  \"total_authors\": " << authorsToNumbers.getMaxID() << ",\n";
+	metadataFile << "  \"total_links\": " << papersAndAuthorsDB.size() << "\n";
 	metadataFile << "}\n";
 
 	// Close files

@@ -181,3 +181,5 @@ ponder_dblp/install/
 
 *.duckdb
 *.duckdb.*
+
+audit/
