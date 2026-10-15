@@ -115,6 +115,8 @@ async function busy(button, action) {
 
 const state = {
   paperTypes: {},           // id -> name, from the server
+  paperTypeHelp: {},        // id -> short explanation (tooltip)
+  defaultExcludedTypes: [], // types that start unticked
   selected: new Map(),      // author id -> author
   conflicts: null,          // last /api/conflicts response
   expanded: new Set(),      // co-author ids with open paper lists
@@ -132,6 +134,8 @@ async function loadMeta() {
   try {
     const meta = await api("/api/meta");
     state.paperTypes = meta.paper_types;
+    state.paperTypeHelp = meta.paper_type_help || {};
+    state.defaultExcludedTypes = meta.default_excluded_types || [];
     const info = $("#snapshot-info");
     const date = (meta.snapshot_time || "").slice(0, 10);
     info.textContent = `DBLP data from ${date} (${plural(meta.age_days, "day")} old) · ` +
@@ -139,6 +143,11 @@ async function loadMeta() {
     if (meta.age_days > 10) {
       info.classList.add("stale");
       info.textContent += " – the snapshot is outdated, consider refreshing it.";
+    }
+    const bad = Object.entries(meta.integrity || {}).filter(([key, n]) => n && key !== "duplicate_links_removed");
+    if (bad.length) {
+      info.classList.add("stale");
+      info.textContent += ` – DATA WARNING: the snapshot lost records during parsing (${bad.map(([key, n]) => `${n} ${key.replaceAll("_", " ")}`).join(", ")}); regenerate it with the current ponder_dblp.`;
     }
     buildTypeBoxes();
   } catch (e) {
@@ -149,7 +158,9 @@ async function loadMeta() {
 
 function buildTypeBoxes() {
   $("#type-boxes").replaceChildren(...Object.entries(state.paperTypes).map(([id, name]) =>
-    el("label", {}, el("input", { type: "checkbox", value: id, checked: true, onchange: refresh }), " " + name)));
+    el("label", { title: state.paperTypeHelp[id] },
+      el("input", { type: "checkbox", value: id, checked: !state.defaultExcludedTypes.includes(Number(id)), onchange: refresh }),
+      " " + name)));
 }
 
 // ---------- step 1: authors ----------

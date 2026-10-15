@@ -21,7 +21,12 @@ def ids(authors):
 
 
 def test_meta(client):
-    assert client.get("/api/meta").json()["total_authors"] == 6
+    meta = client.get("/api/meta").json()
+    assert meta["total_authors"] == 6
+    assert meta["paper_types"]["8"] == "Reference" and meta["paper_types"]["9"] == "Editorship"
+    assert meta["paper_types"]["10"] == "Withdrawn"
+    assert meta["default_excluded_types"] == [8, 9, 10]  # the page starts with these unticked
+    assert set(meta["paper_type_help"]) == {"8", "9", "10"}
 
 
 def test_search_multiple_queries(client):
@@ -130,3 +135,20 @@ def test_static_files_are_revalidated(client):
     for path in ("/", "/app.js", "/style.css"):
         r = client.get(path)
         assert r.status_code == 200 and r.headers["cache-control"] == "no-cache"
+
+
+def test_resource_limits_are_applied(snapshot_dir, tmp_path):
+    app = create_app(tmp_path / "dblp.duckdb", snapshot_dir=snapshot_dir, threads=2, memory_limit="1GB")
+    with TestClient(app) as c:
+        assert c.get("/api/meta").status_code == 200
+        con = app.state.db._con
+        assert con.execute("select current_setting('threads')").fetchone()[0] == 2
+        assert "953" in str(con.execute("select current_setting('memory_limit')").fetchone()[0])  # 1GB = 953.6 MiB
+
+
+def test_invalid_memory_limit_is_rejected(snapshot_dir, tmp_path):
+    from quickdblp.db import Database, build_snapshot
+
+    build_snapshot(snapshot_dir, tmp_path / "dblp.duckdb")
+    with pytest.raises(ValueError, match="memory limit"):
+        Database(tmp_path / "dblp.duckdb", memory_limit="1GB'; drop table authors; --")

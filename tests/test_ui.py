@@ -81,7 +81,12 @@ def select_alice_and_bob(page):
 
 def test_search_select_and_layout(page):
     expect(page.locator("#snapshot-info")).to_contain_text("DBLP data from 2026-06-18")
-    expect(page.locator("#type-boxes input")).to_have_count(7)
+    expect(page.locator("#type-boxes input")).to_have_count(10)
+    for type_id in (1, 2, 3, 4, 5, 6, 7):
+        expect(page.locator(f"#type-boxes input[value='{type_id}']")).to_be_checked()
+    for type_id in (8, 9, 10):  # Reference, Editorship, Withdrawn: off until the user asks for them
+        expect(page.locator(f"#type-boxes input[value='{type_id}']")).not_to_be_checked()
+    expect(page.locator("#type-boxes label", has_text="Editorship")).to_have_attribute("title", re.compile("editors"))
     expect(page.locator("#tabs")).to_be_hidden()
     expect(page.locator("#right-empty")).to_be_visible()
 

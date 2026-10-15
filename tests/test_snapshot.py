@@ -113,3 +113,50 @@ def test_rebuild_while_db_is_open_fails_cleanly(snapshot_dir, tmp_path):
         assert db.meta()["total_authors"] == 6  # the old database is untouched
     finally:
         db.close()
+
+
+def test_duplicate_links_are_removed_and_counted(snapshot_dir, tmp_path):
+    # DBLP sometimes lists a person twice on a paper: the metadata count includes the duplicate
+    links = (snapshot_dir / "dblp_papers_authors.csv")
+    links.write_text(links.read_text() + "1\t2\n", encoding="utf-8")
+    meta_path = snapshot_dir / "dblp_metadata.json"
+    meta = json.loads(meta_path.read_text())
+    meta["total_links"] += 1
+    meta_path.write_text(json.dumps(meta))
+    db_path = tmp_path / "dblp.duckdb"
+    build_snapshot(snapshot_dir, db_path)
+    db = Database(db_path)
+    try:
+        assert db.meta()["integrity"]["duplicate_links_removed"] == 1
+        bob = next(e for e in db.coauthors([1]) if e["name"] == "Bob Brandt")
+        assert bob["paper_count"] == 1 and len(bob["papers"]) == 1  # not counted twice
+    finally:
+        db.close()
+
+
+def test_clean_snapshot_has_no_integrity_problems(db):
+    assert db.meta()["integrity"] == {
+        "duplicate_links_removed": 0, "links_to_missing_papers": 0,
+        "links_to_missing_authors": 0, "papers_without_authors": 0,
+    }
+
+
+def test_lost_records_are_reported(snapshot_dir, tmp_path, caplog):
+    # what the old exporter did: the last paper/author row is missing although links refer to it
+    for name, drop in (("dblp_papers.csv", "6\t"), ("dblp_authors.csv", "6\t")):
+        f = snapshot_dir / name
+        f.write_text("".join(l for l in f.read_text(encoding="utf-8").splitlines(True) if not l.startswith(drop)), encoding="utf-8")
+    meta_path = snapshot_dir / "dblp_metadata.json"
+    meta = json.loads(meta_path.read_text())
+    meta["total_papers"] -= 1
+    meta["total_authors"] -= 1
+    meta_path.write_text(json.dumps(meta))
+    db_path = tmp_path / "dblp.duckdb"
+    build_snapshot(snapshot_dir, db_path)
+    db = Database(db_path)
+    try:
+        integrity = db.meta()["integrity"]
+    finally:
+        db.close()
+    assert integrity["links_to_missing_papers"] == 2 and integrity["links_to_missing_authors"] == 1
+    assert "inconsistent" in caplog.text

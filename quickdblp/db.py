@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import threading
 from datetime import datetime
 from pathlib import Path
@@ -13,7 +14,7 @@ import duckdb
 
 log = logging.getLogger("quickdblp")
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 SNAPSHOT_FILES = ("dblp_authors.csv", "dblp_papers.csv", "dblp_papers_authors.csv")
 METADATA_FILE = "dblp_metadata.json"
@@ -26,6 +27,18 @@ PAPER_TYPES = {
     5: "Part",
     6: "Informal",
     7: "Data",
+    8: "Reference",
+    9: "Editorship",
+    10: "Withdrawn",
+}
+
+# Types that are not counted as conflicts unless the user asks for them (the page unticks them initially).
+DEFAULT_EXCLUDED_TYPES = [8, 9, 10]
+
+PAPER_TYPE_HELP = {
+    8: "Entries of reference works such as encyclopedias and handbooks",
+    9: "Edited volumes and proceedings: the people listed are editors, not authors",
+    10: "Papers that were withdrawn after publication",
 }
 
 MATCHERS = ("prefix", "like", "accent", "fuzzy")
@@ -107,10 +120,14 @@ def build_snapshot(snapshot_dir: str | Path, db_path: str | Path, force: bool = 
         _load(con, "create table papers_authors as select * from {src}",
               links, "{'PaperID': 'BIGINT', 'AuthorID': 'BIGINT'}", 2, work_dir)
         _verify_counts(con, fp["metadata"])
+        integrity = _clean_and_check(con)
         con.execute("create index idx_pa_author on papers_authors(AuthorID)")
         con.execute("create index idx_pa_paper on papers_authors(PaperID)")
         con.execute("create table meta(key varchar primary key, value varchar)")
-        con.execute("insert into meta values ('fingerprint', ?), ('built_at', ?)", [json.dumps(fp), datetime.now().isoformat()])
+        con.execute(
+            "insert into meta values ('fingerprint', ?), ('built_at', ?), ('integrity', ?)",
+            [json.dumps(fp), datetime.now().isoformat(), json.dumps(integrity)],
+        )
         con.execute("checkpoint")
     except BaseException:
         con.close()
@@ -182,6 +199,36 @@ def repair_tsv(src: Path, dst: Path, ncols: int) -> int:
     return repaired
 
 
+def _clean_and_check(con: duckdb.DuckDBPyConnection) -> dict:
+    """Drop duplicate links and report inconsistencies of the loaded snapshot.
+
+    Duplicate (paper, author) links occur when DBLP lists the same person twice on a paper; kept, they
+    would inflate paper counts. Dangling links / papers without authors cannot be repaired here: they
+    mean the parser lost records (see `quickdblp audit`), so they are reported, not hidden.
+    """
+    (before,) = con.execute("select count(*) from papers_authors").fetchone()
+    con.execute("create table pa_unique as select distinct PaperID, AuthorID from papers_authors")
+    con.execute("drop table papers_authors")
+    con.execute("alter table pa_unique rename to papers_authors")
+    (after,) = con.execute("select count(*) from papers_authors").fetchone()
+    one = lambda sql: con.execute(sql).fetchone()[0]  # noqa: E731
+    integrity = {
+        "duplicate_links_removed": before - after,
+        "links_to_missing_papers": one(
+            "select count(*) from papers_authors l where not exists (select 1 from papers p where p.NumericID = l.PaperID)"),
+        "links_to_missing_authors": one(
+            "select count(*) from papers_authors l where not exists (select 1 from authors a where a.NumericID = l.AuthorID)"),
+        "papers_without_authors": one(
+            "select count(*) from papers p where not exists (select 1 from papers_authors l where l.PaperID = p.NumericID)"),
+    }
+    if integrity["duplicate_links_removed"]:
+        log.info("removed %d duplicate (paper, author) links", integrity["duplicate_links_removed"])
+    problems = {k: v for k, v in integrity.items() if v and k != "duplicate_links_removed"}
+    if problems:
+        log.warning("snapshot is inconsistent (the parser lost records, rebuild it with the current ponder_dblp): %s", problems)
+    return integrity
+
+
 def _verify_counts(con: duckdb.DuckDBPyConnection, metadata: dict) -> None:
     expected = {"authors": "total_authors", "papers": "total_papers", "papers_authors": "total_links"}
     for table, key in expected.items():
@@ -190,6 +237,19 @@ def _verify_counts(con: duckdb.DuckDBPyConnection, metadata: dict) -> None:
         (actual,) = con.execute(f"select count(*) from {table}").fetchone()
         if actual != metadata[key]:
             raise SnapshotError(f"{table}: {actual} rows loaded but metadata says {metadata[key]}; snapshot incomplete?")
+
+
+_MEMORY_LIMIT = re.compile(r"^\d+(\.\d+)?\s*(KB|MB|GB|TB|KiB|MiB|GiB|TiB)$", re.IGNORECASE)
+
+
+def apply_resource_limits(con: duckdb.DuckDBPyConnection, threads: int | None = None, memory_limit: str | None = None) -> None:
+    """SET threads / memory_limit (DuckDB cannot bind parameters in SET, so the values are validated)."""
+    if threads:
+        con.execute(f"set threads = {int(threads)}")
+    if memory_limit:
+        if not _MEMORY_LIMIT.match(memory_limit.strip()):
+            raise ValueError(f"invalid memory limit {memory_limit!r} (examples: 4GB, 512MB)")
+        con.execute(f"set memory_limit = '{memory_limit.strip()}'")
 
 
 class QueryTimeout(RuntimeError):
@@ -212,10 +272,7 @@ class Database:
         timeout: float = 30.0,
     ):
         self._con = duckdb.connect(str(db_path), read_only=True)
-        if threads:
-            self._con.execute("select set_config('threads', ?)", [str(threads)])
-        if memory_limit:
-            self._con.execute("select set_config('memory_limit', ?)", [memory_limit])
+        apply_resource_limits(self._con, threads, memory_limit)
         self._slots = threading.BoundedSemaphore(max_concurrent)
         self._timeout = timeout
 
@@ -255,7 +312,12 @@ class Database:
             "total_papers": metadata.get("total_papers"),
             "total_authors": metadata.get("total_authors"),
             "total_links": metadata.get("total_links"),
+            "integrity": self._integrity(),
         }
+
+    def _integrity(self) -> dict:
+        rows = self._query("select value from meta where key = 'integrity'")
+        return json.loads(rows[0][0]) if rows else {}
 
     def search_authors(self, query: str, matcher: str = "prefix", limit: int = 100) -> dict:
         """Find author candidates. Returns {"authors": [...], "truncated": bool}.

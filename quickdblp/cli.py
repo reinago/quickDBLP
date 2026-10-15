@@ -1,4 +1,5 @@
 import argparse
+import json
 import sys
 
 from .db import SnapshotError, build_snapshot
@@ -26,7 +27,36 @@ def main(argv: list[str] | None = None) -> int:
     serve.add_argument("--max-concurrent", type=int, default=8, help="max simultaneously running queries")
     serve.add_argument("--timeout", type=float, default=30.0, help="per-query timeout in seconds")
 
+    audit = sub.add_parser(
+        "audit",
+        help="compare the database with the original RDF dump (ground truth; streams the whole dump, takes a while)",
+    )
+    audit.add_argument("--rdf", default="dblp.rdf.gz", help="the original dump (default: dblp.rdf.gz)")
+    audit.add_argument("--db", default=DEFAULT_DB)
+    audit.add_argument("--work-dir", default="audit", help="where the (large) intermediate files go")
+    audit.add_argument("--reuse-truth", action="store_true", help="skip reading the dump if work-dir/truth.tsv exists")
+    audit.add_argument("--memory-limit", help="DuckDB memory limit for the comparison, e.g. 8GB")
+    audit.add_argument("--extract-only", action="store_true", help="only read the dump into work-dir/truth.tsv")
+    audit.add_argument("--max-lines", type=int, help="with --extract-only: stop after this many lines (benchmarking)")
+
     args = parser.parse_args(argv)
+    if args.command == "audit":
+        from pathlib import Path
+
+        from .audit import extract_truth, format_report, run_audit
+
+        def progress(lines, seconds):
+            print(f"  {lines / 1e6:,.0f}M lines, {seconds:,.0f}s ({lines / seconds / 1e6:.2f}M lines/s)", flush=True)
+
+        if args.extract_only:
+            work = Path(args.work_dir)
+            work.mkdir(parents=True, exist_ok=True)
+            stats = extract_truth(args.rdf, work / "truth.tsv", max_lines=args.max_lines, progress=progress)
+            print(json.dumps(stats, indent=1))
+            return 0
+        report, stats = run_audit(args.rdf, args.db, args.work_dir, args.reuse_truth, args.memory_limit, progress)
+        print(format_report(report, stats))
+        return 0 if report["ok"] else 1
     if args.command == "serve":
         import logging
 

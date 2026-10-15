@@ -13,7 +13,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from .db import MATCHERS, PAPER_TYPES, Database, QueryTimeout, build_snapshot, is_up_to_date
+from .db import DEFAULT_EXCLUDED_TYPES, MATCHERS, PAPER_TYPE_HELP, PAPER_TYPES, Database, QueryTimeout, build_snapshot, is_up_to_date
 from .guess import GuessError, guess_authors
 
 log = logging.getLogger("quickdblp")
@@ -106,7 +106,12 @@ def create_app(
 
     @app.get("/api/meta")
     def meta(request: Request):
-        return {**request.app.state.db.meta(), "paper_types": PAPER_TYPES}
+        return {
+            **request.app.state.db.meta(),
+            "paper_types": PAPER_TYPES,
+            "paper_type_help": PAPER_TYPE_HELP,
+            "default_excluded_types": DEFAULT_EXCLUDED_TYPES,
+        }
 
     @app.post("/api/authors/search")
     def search(req: SearchRequest, request: Request):
