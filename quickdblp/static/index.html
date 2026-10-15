@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>quickDBLP – co-author conflicts</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%231f5fbf'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>quickDBLP</h1>
+  <p id="snapshot-info" class="muted">Loading…</p>
+</header>
+
+<div id="error" role="alert" hidden></div>
+
+<main class="layout">
+  <!-- STEP 1 (left half) -->
+  <section id="step-authors">
+    <h2><span class="step">1</span> Authors</h2>
+    <p class="muted">Find the DBLP profiles of the submission's authors. Names or DBLP profile URLs, separated by <kbd>;</kbd> or new lines. <kbd>Enter</kbd> searches, <kbd>Shift</kbd>+<kbd>Enter</kbd> adds a line.</p>
+
+    <details id="guess-box">
+      <summary>Extract authors from a submission page</summary>
+      <div class="row">
+        <label>Source
+          <select id="guess-source">
+            <option value="pcs">PCS</option>
+            <option value="easychair">EasyChair</option>
+          </select>
+        </label>
+        <button id="guess-btn" type="button">Extract authors</button>
+      </div>
+      <label class="block">Page source (HTML)
+        <textarea id="guess-html" rows="5" placeholder="Paste the HTML source of the submission page here"></textarea>
+      </label>
+    </details>
+
+    <label class="block">Authors
+      <textarea id="author-input" rows="3" placeholder="Jane Doe; John Smith; https://dblp.org/pid/…"></textarea>
+    </label>
+    <div class="row">
+      <label>Matching
+        <select id="author-matcher">
+          <option value="prefix">Prefix</option>
+          <option value="accent">Accent-insensitive prefix</option>
+          <option value="fuzzy">Fuzzy</option>
+          <option value="like">Pattern (LIKE, % = wildcard)</option>
+        </select>
+      </label>
+      <button id="author-search" type="button" class="primary">Search</button>
+    </div>
+
+    <div id="author-results"></div>
+    <p id="selected-summary" class="muted"></p>
+  </section>
+
+  <!-- RIGHT HALF: tabs for steps 2 and 3 -->
+  <section id="right-pane">
+    <div id="shared-filters" class="filters" role="group" aria-label="Filters for conflicts and reviewer check" hidden>
+      <div class="filter">
+        <label for="years">Years back</label>
+        <input id="years" type="range" min="1" max="10" value="5">
+        <output id="years-label"></output>
+        <label class="inline"><input id="any-year" type="checkbox"> any year</label>
+      </div>
+      <fieldset class="filter">
+        <legend>Include paper types</legend>
+        <span id="type-boxes"></span>
+      </fieldset>
+    </div>
+
+    <div id="tabs" role="tablist" aria-label="Results" hidden>
+      <button type="button" role="tab" id="tab-conflicts" aria-controls="step-conflicts" aria-selected="true"><span class="step">2</span> Conflicts</button>
+      <button type="button" role="tab" id="tab-reviewers" aria-controls="step-reviewers" aria-selected="false" tabindex="-1"><span class="step">3</span> Check reviewers</button>
+    </div>
+    <p id="right-empty" class="muted">Search for authors and tick their DBLP profiles on the left. Their co-authors (conflicts) and the reviewer check show up here.</p>
+
+  <div id="step-conflicts" role="tabpanel" aria-labelledby="tab-conflicts" hidden>
+
+    <div class="filters list-filter">
+      <div class="filter">
+        <label for="conflict-filter">Filter list</label>
+        <input id="conflict-filter" type="search" placeholder="name, ORCID, paper title…">
+      </div>
+      <div class="filter">
+        <label class="inline"><input id="exclude-self" type="checkbox"> exclude the selected authors themselves</label>
+      </div>
+    </div>
+
+    <p id="conflict-summary" class="muted" aria-live="polite"></p>
+    <div class="row">
+      <button id="expand-all" type="button" class="small">Expand all</button>
+      <button id="collapse-all" type="button" class="small">Collapse all</button>
+    </div>
+    <div class="table-wrap"><table id="conflict-table"></table></div>
+  </div>
+
+  <div id="step-reviewers" role="tabpanel" aria-labelledby="tab-reviewers" hidden>
+    <p class="muted">Optional: names or DBLP URLs of the reviewers you have in mind (one per line or separated by <kbd>;</kbd>; <kbd>Enter</kbd> checks, <kbd>Shift</kbd>+<kbd>Enter</kbd> adds a line). They are checked against the conflicts of the selected authors, using the years and paper-type filters above. A selected author listed as reviewer is always a conflict.</p>
+    <label class="block">Reviewers
+      <textarea id="reviewer-input" rows="4" placeholder="Reviewer One&#10;Reviewer Two"></textarea>
+    </label>
+    <div class="row">
+      <label>Matching
+        <select id="reviewer-matcher">
+          <option value="prefix">Prefix</option>
+          <option value="accent">Accent-insensitive prefix</option>
+          <option value="fuzzy">Fuzzy</option>
+          <option value="like">Pattern (LIKE, % = wildcard)</option>
+        </select>
+      </label>
+      <button id="reviewer-check" type="button" class="primary">Check</button>
+    </div>
+    <p id="reviewer-summary" class="muted" aria-live="polite"></p>
+    <div id="reviewer-results"></div>
+  </div>
+  </section>
+</main>
+
+<script src="app.js"></script>
+</body>
+</html>

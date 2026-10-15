@@ -43,3 +43,6 @@ tzdata==2025.3
 urllib3==2.6.3
 wcwidth==0.3.1
 widgetsnbextension==4.0.15
+
+fastapi>=0.115
+uvicorn>=0.32

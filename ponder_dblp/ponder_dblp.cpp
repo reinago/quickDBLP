@@ -174,6 +174,24 @@ std::string dump_node(pugi::xml_node n) {
 	return oss.str();
 }
 
+// The output files are tab-separated with one record per line, so tabs and line breaks inside
+// titles/names (e.g. arXiv titles with math) must not reach them. Runs are collapsed to one space.
+std::string sanitizeField(const std::string& s) {
+	std::string out;
+	out.reserve(s.size());
+	bool pendingSpace = false;
+	for (char c : s) {
+		if (c == '\t' || c == '\r' || c == '\n') {
+			pendingSpace = !out.empty();
+		} else {
+			if (pendingSpace) out += ' ';
+			pendingSpace = false;
+			out += c;
+		}
+	}
+	return out;
+}
+
 pugi::xml_node check_child(pugi::xml_node n, std::string name) {
 	auto c = n.child(name);
 	if (c == nullptr) throw std::invalid_argument("could not find '" + name + "' in '" + n.name() + "'\n" + dump_node(n));
@@ -240,7 +258,7 @@ int processPaperBuffer(std::vector<std::string> buf, ParserState::Value paperTyp
 			} else {
 				authorOrcid = check_resource(orc);
 			}
-			authorName = check_child(sig_content, "dblp:signatureDblpName").child_value();
+			authorName = sanitizeField(check_child(sig_content, "dblp:signatureDblpName").child_value());
 			printInfo("Found creator: " + authorID + ", " + authorOrcid + ", " + authorName);
 			currCreators.emplace_back(authorID, authorOrcid, authorName);
 		}
@@ -261,7 +279,7 @@ int processPaperBuffer(std::vector<std::string> buf, ParserState::Value paperTyp
 		printWarning("No title found for paper " + currPaperID + ", skipping\n" + dump_node(pub));
 		return 0;
 	}
-	currTitle = child_title.child_value();
+	currTitle = sanitizeField(child_title.child_value());
 	printInfo("Current Title: " + currTitle);
 
 	auto child_year = pub.child("dblp:yearOfPublication");

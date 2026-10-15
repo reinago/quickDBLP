@@ -178,3 +178,6 @@ ponder_dblp/.vs/
 *.rdf*
 
 ponder_dblp/install/
+
+*.duckdb
+*.duckdb.*
