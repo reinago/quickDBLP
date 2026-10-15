@@ -36,17 +36,19 @@ def find_parser():
     return fresh[0] if fresh else None
 
 
-def run_parser(tmp_path_factory, rdf_gz: Path) -> Path:
+def run_parser(tmp_path_factory, rdf_gz: Path, as_argument: bool = False) -> Path:
     exe = find_parser()
     if exe is None or not rdf_gz.exists():
         pytest.skip("no ponder_dblp binary newer than ponder_dblp.cpp (build it: see Readme)")
     work = tmp_path_factory.mktemp("parser")
-    shutil.copy(rdf_gz, work / "dblp.rdf.gz")
+    if not as_argument:
+        shutil.copy(rdf_gz, work / "dblp.rdf.gz")
     env = dict(os.environ)
     # the vcpkg DLLs sit next to the binary in `install/`, and in vcpkg_installed/ in the build tree
     dll_dirs = [exe.parent, *exe.parent.glob("vcpkg_installed/*/bin")]
     env["PATH"] = os.pathsep.join(str(d) for d in dll_dirs) + os.pathsep + env.get("PATH", "")
-    result = subprocess.run([str(exe)], cwd=work, env=env, capture_output=True, text=True, timeout=300)
+    command = [str(exe), str(rdf_gz)] if as_argument else [str(exe)]
+    result = subprocess.run(command, cwd=work, env=env, capture_output=True, text=True, timeout=300)
     assert result.returncode == 0, result.stdout + result.stderr
     return work
 
@@ -103,3 +105,12 @@ def test_parser_handles_every_record_type_and_editors(synthetic_output, tmp_path
     links = con.execute("""select p.DBLP, count(*) from papers_authors l join papers p on p.NumericID = l.PaperID
                            where p.DBLP like '%conf/e/6' or p.DBLP like '%conf/a/4' group by 1 order by 1""").fetchall()
     assert [n for _, n in links] == [1, 1]
+
+
+def test_parser_accepts_the_dump_as_argument(tmp_path_factory):
+    # the path ends up in the metadata: backslashes of Windows paths must not break the JSON
+    work = run_parser(tmp_path_factory, MINI, as_argument=True)
+    meta = json.loads((work / "dblp_metadata.json").read_text())
+    assert Path(meta["source_file"]) == MINI
+    assert meta["total_papers"] == 6 and meta["records_failed"] == 0
+    assert not (MINI.parent / "mini.rdf.gz.lock").exists()

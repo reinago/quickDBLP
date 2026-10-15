@@ -121,6 +121,10 @@ def build_snapshot(snapshot_dir: str | Path, db_path: str | Path, force: bool = 
               links, "{'PaperID': 'BIGINT', 'AuthorID': 'BIGINT'}", 2, work_dir)
         _verify_counts(con, fp["metadata"])
         integrity = _clean_and_check(con)
+        # newer parsers count the malformed records they had to skip (older ones did not write the field)
+        integrity["parser_records_failed"] = int(fp["metadata"].get("records_failed", 0))
+        if integrity["parser_records_failed"]:
+            log.warning("the parser skipped %d malformed records; the snapshot is incomplete", integrity["parser_records_failed"])
         con.execute("create index idx_pa_author on papers_authors(AuthorID)")
         con.execute("create index idx_pa_paper on papers_authors(PaperID)")
         con.execute("create table meta(key varchar primary key, value varchar)")

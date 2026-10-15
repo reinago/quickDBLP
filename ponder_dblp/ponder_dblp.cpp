@@ -1,23 +1,33 @@
-#include <iostream>
-#include <iomanip>
+// Turns the DBLP RDF dump (dblp.rdf.gz) into tab-separated tables of authors, papers and their relations.
+//
+// How it works: one thread decompresses the dump in large blocks and cuts it into records (one per
+// publication), a pool of worker threads parses each record and enters it into the in-memory tables, and at
+// the end the tables are written as CSV files into the current directory.
+//
+// usage: ponder_dblp [path/to/dump.rdf.gz]     (default: dblp.rdf.gz in the current directory)
+
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <charconv>
+#include <cstdio>
+#include <cstring>
+#include <cstdlib>
+#include <filesystem>
 #include <fstream>
+#include <future>
+#include <iomanip>
+#include <iostream>
 #include <sstream>
+#include <stdexcept>
 #include <string>
+#include <string_view>
+#include <thread>
+#include <tuple>
 #include <unordered_map>
 #include <vector>
-#include <array>
-#include <tuple>
-#include <regex>
-#include <filesystem>
-
-// TODO
-// profile the code
-// is it better collect everything per thread and merge afterward? ID merging would be a headache
-// #define DEBUGGING 1
-#define USE_THREAD_POOL 1
 
 #define WITH_GZFILEOP
-#include <set>
 #include <zlib-ng.h>
 
 #include <pugixml.hpp>
@@ -49,6 +59,11 @@ void printError(const std::string& msg) {
 	}
 }
 
+// The message is only built when the level is enabled (the arguments of a plain printInfo call would be
+// concatenated for every paper and author even if nothing is printed).
+#define LOG_INFO(message) \
+	do { if (printLevel >= LogLevel::Info) printInfo(message); } while (0)
+
 ThreadSafeIDGenerator<uint32_t> authorsToNumbers;
 struct Author {
 	std::string id;
@@ -68,6 +83,9 @@ InMemDB<uint32_t, Paper> paperDB;
 
 LinkDB<uint32_t> papersAndAuthorsDB;
 
+// records that could not be processed (malformed); the run continues but reports them at the end
+std::atomic<uint64_t> failedRecords{ 0 };
+
 class ParserState {
 public:
 	enum Value : uint8_t {
@@ -85,98 +103,43 @@ public:
 		NUMBER_OF_PARSER_STATES
 	};
 
-	inline static std::string startingPrefix = "<dblp:";
-	inline static std::string endingPrefix = "</dblp:";
-
-	constexpr operator Value() const {
-		return state;
-	}
-
-	static std::string getEntityFromState(Value st) {
+	static std::string_view entityName(Value st) {
 		switch (st) {
-		case Inproceedings:
-			return "Inproceedings";
-		case Incollection:
-			return "Incollection";
-		case Article:
-			return "Article";
-		case Book:
-			return "Book";
-		case Part:
-			return "Part";
-		case Informal:
-			return "Informal";
-		case Data:
-			return "Data";
-		case Reference:
-			return "Reference";
-		case Editorship:
-			return "Editorship";
-		case Withdrawn:
-			return "Withdrawn";
-		default:
-			return "Unknown";
+		case Inproceedings: return "Inproceedings";
+		case Incollection: return "Incollection";
+		case Article: return "Article";
+		case Book: return "Book";
+		case Part: return "Part";
+		case Informal: return "Informal";
+		case Data: return "Data";
+		case Reference: return "Reference";
+		case Editorship: return "Editorship";
+		case Withdrawn: return "Withdrawn";
+		default: return "Unknown";
 		}
 	}
 
-	std::string getEntity() const {
-		return getEntityFromState(state);
-	}
-
-	static std::string getStartSnippet(Value st) {
-		return startingPrefix + getEntityFromState(st);
-	}
-
-	static std::string getEndSnippet(Value st) {
-		return endingPrefix + getEntityFromState(st) + ">";
-	}
-
-	std::string getStartSnippet() const {
-		return getStartSnippet(state);
-	}
-	std::string getEndSnippet() const {
-		return getEndSnippet(state);
-	}
-
-	void checkForStateChange(const std::string& line) {
-		if (state == Searching) {
-			if (line.find(startingPrefix) == std::string::npos) {
-				return;
-			}
-			for (int i = 1; i < NUMBER_OF_PARSER_STATES; ++i) {
-				if (line.find(getEntityFromState(static_cast<Value>(i)), startingPrefix.size()) == startingPrefix.size()) {
-					state = static_cast<Value>(i);
-					return;
-				}
-			}
-		} else {
-			if (line.find(endingPrefix) == std::string::npos) {
-				return;
-			}
-			if (line.find(getEntity(), endingPrefix.size()) == endingPrefix.size()) {
-				state = Searching;
-			}
+	// Between records: does this line open a record of one of the known types ("<dblp:" + type name at the
+	// beginning of the line)? Returns the type, or Searching if not.
+	static Value startedEntity(std::string_view line) {
+		constexpr std::string_view prefix = "<dblp:";
+		if (line.size() <= prefix.size() || line.compare(0, prefix.size(), prefix) != 0) return Searching;
+		const std::string_view rest = line.substr(prefix.size());
+		for (int i = 1; i < NUMBER_OF_PARSER_STATES; ++i) {
+			const auto name = entityName(static_cast<Value>(i));
+			if (rest.size() >= name.size() && rest.compare(0, name.size(), name) == 0) return static_cast<Value>(i);
 		}
+		return Searching;
 	}
 
-private:
-	Value state = Searching;
+	// Inside a record of the given type: does this line close it ("</dblp:" + type name at the beginning)?
+	static bool endsEntity(std::string_view line, Value st) {
+		constexpr std::string_view prefix = "</dblp:";
+		const auto name = entityName(st);
+		return line.size() >= prefix.size() + name.size() && line.compare(0, prefix.size(), prefix) == 0 &&
+			line.compare(prefix.size(), name.size(), name) == 0;
+	}
 };
-
-// Helper functions
-int checkAuthor(const std::string& authorID, const std::string& authorOrcid, const std::string& authorName) {
-	auto res = authorsToNumbers.getOrCreateID(authorID);
-	int realID = std::get<0>(res);
-	if (std::get<1>(res)) {
-		// New author, add to the database
-		authorDB.storeItem(realID, { authorID, authorOrcid, authorName });
-		printInfo("Assigned number " + std::to_string(realID) + " to author ID " + authorID);
-	} else {
-		// Existing author
-		printInfo("Existing author found: " + authorID);
-	}
-	return realID;
-}
 
 std::string dump_node(pugi::xml_node n) {
 	std::ostringstream oss;
@@ -186,7 +149,7 @@ std::string dump_node(pugi::xml_node n) {
 
 // The output files are tab-separated with one record per line, so tabs and line breaks inside
 // titles/names (e.g. arXiv titles with math) must not reach them. Runs are collapsed to one space.
-std::string sanitizeField(const std::string& s) {
+std::string sanitizeField(std::string_view s) {
 	std::string out;
 	out.reserve(s.size());
 	bool pendingSpace = false;
@@ -202,126 +165,142 @@ std::string sanitizeField(const std::string& s) {
 	return out;
 }
 
-pugi::xml_node check_child(pugi::xml_node n, std::string name) {
+pugi::xml_node check_child(pugi::xml_node n, const char* name) {
 	auto c = n.child(name);
-	if (c == nullptr) throw std::invalid_argument("could not find '" + name + "' in '" + n.name() + "'\n" + dump_node(n));
+	if (c == nullptr) throw std::invalid_argument(std::string("could not find '") + name + "' in '" + n.name() + "'\n" + dump_node(n));
 	return c;
-};
+}
 
-std::string check_attribute(pugi::xml_node n, std::string name) {
-	auto r = n.attribute(name);
-	if (r == nullptr) return "";
-	return r.value();
-};
+// rdf:resource of a node, or "" if it has none
+std::string_view check_resource(pugi::xml_node n) {
+	return n.attribute("rdf:resource").value();
+}
 
-std::string check_resource(pugi::xml_node n) {
-	return check_attribute(n, "rdf:resource");
-};
+std::string_view firstLine(const std::string& text) {
+	return std::string_view(text).substr(0, text.find('\n'));
+}
 
-int processPaperBuffer(std::vector<std::string> buf, ParserState::Value paperType) {
-	static std::regex idRegex(R"q(rdf:about="([^"]+)")q");
-	static std::regex titleRegex(R"q(<dblp:title>([^<]+)</dblp:title>)q");
-	static std::regex yearRegex(R"q(<dblp:yearOfPublication.*?>(\d+)</dblp:yearOfPublication>)q");
-	static std::regex authorRegex(R"q(<dblp:authoredBy rdf:resource="([^"]+)")q");
-	static std::regex signatureCreatorRegex(R"q(<dblp:signatureCreator rdf:resource="([^"]+)")q");
-	static std::regex signatureOrcidRegex(R"q(<dblp:signatureOrcid rdf:resource="([^"]+)")q");
-	static std::regex signatureNameRegex(R"q(<dblp:signatureDblpName>([^<]+)</dblp:signatureDblpName>)q");
+// The same person is signed differently on different papers (with or without ORCID, "Ruben D. Vromans" or
+// "Ruben Vromans"). Which signature is seen first depends on thread timing, so a fixed rule picks one:
+// any ORCID wins, and of several name variants the smallest string (this also prefers DBLP's "... 0001" form).
+void mergeAuthor(Author& author, std::string_view orcid, std::string_view name) {
+	if (!orcid.empty() && (author.orcid.empty() || orcid < author.orcid)) {
+		author.orcid = orcid;
+	}
+	if (name != std::string_view(author.name)) {
+		std::string candidate = sanitizeField(name);
+		if (!candidate.empty() && (author.name.empty() || candidate < author.name)) {
+			author.name = std::move(candidate);
+		}
+	}
+}
 
-	std::smatch match;
-
-	std::vector<std::tuple<std::string, std::string, std::string>> currCreators;
-	std::vector<std::string> currAuthors;
-	std::string currPaperID;
-	uint32_t currPaperNumericID = 0;
-	std::string currTitle;
-	uint16_t currYear = 0;
-	std::string authorID, authorOrcid, authorName;
-
-	std::ostringstream imploded;
-	std::copy(buf.begin(), buf.end(),
-		std::ostream_iterator<std::string>(imploded, "\n"));
+// Parses one record (the text of a <dblp:...> element, modified in place by the XML parser) and enters it
+// into the tables. Records that do not qualify are skipped (see the rules below).
+void processPaperBuffer(std::string& record, ParserState::Value paperType) {
 	pugi::xml_document doc;
-	auto result = doc.load_string(imploded.str().c_str());
-
+	auto result = doc.load_buffer_inplace(record.data(), record.size());
 	if (result.status != pugi::status_ok) {
-		throw std::invalid_argument("could not parse publication: " + buf[0]);
+		throw std::invalid_argument("could not parse publication: " + std::string(firstLine(record)));
 	}
 
-	auto pub = *doc.children().begin(); //doc.child("dblp:" + ParserState::getEntityFromState(paperType));
-	currPaperID = check_attribute(pub, "rdf:about");
+	auto pub = doc.first_child();
+	if (pub.empty()) {
+		throw std::invalid_argument("empty publication: " + std::string(firstLine(record)));
+	}
+	const std::string_view currPaperID = pub.attribute("rdf:about").value();
 	if (currPaperID.empty()) {
 		printWarning("No ID found, skipping:\n" + dump_node(pub));
-		return 0;
+		return;
 	}
-	printInfo("Current ID: " + currPaperID);
+	LOG_INFO("Current ID: " + std::string(currPaperID));
 
-	for (const char* personTag : { "dblp:authoredBy", "dblp:editedBy" }) {  // editors only occur in Editorship records
-		for (pugi::xml_node author : pub.children(personTag)) {
-			auto res = check_resource(author);
-			currAuthors.push_back(res);
+	// the people of the record: authors, or editors in Editorship records
+	size_t numPeople = 0;
+	for (const char* personTag : { "dblp:authoredBy", "dblp:editedBy" }) {
+		for (pugi::xml_node person : pub.children(personTag)) {
+			(void)person;
+			++numPeople;
 		}
 	}
-	for (pugi::xml_node sig: pub.children("dblp:hasSignature")) {
-		for (pugi::xml_node sig_content : sig.children()) {
-			const std::string sigName = sig_content.name();
+
+	struct Creator {
+		std::string_view id, orcid, name;
+	};
+	thread_local std::vector<Creator> creators;
+	creators.clear();
+	for (pugi::xml_node sig : pub.children("dblp:hasSignature")) {
+		for (pugi::xml_node sigContent : sig.children()) {
+			const std::string_view sigName = sigContent.name();
 			if (sigName != "dblp:AuthorSignature" && sigName != "dblp:EditorSignature") continue;
-			authorID = check_resource(check_child(sig_content, "dblp:signatureCreator"));
-			auto orc = sig_content.child("dblp:signatureOrcid");
-			if (orc == nullptr) {
-				authorOrcid = "";
-			} else {
-				authorOrcid = check_resource(orc);
-			}
-			authorName = sanitizeField(check_child(sig_content, "dblp:signatureDblpName").child_value());
-			printInfo("Found creator: " + authorID + ", " + authorOrcid + ", " + authorName);
-			currCreators.emplace_back(authorID, authorOrcid, authorName);
+			Creator c;
+			c.id = check_resource(check_child(sigContent, "dblp:signatureCreator"));
+			c.orcid = check_resource(sigContent.child("dblp:signatureOrcid"));
+			c.name = check_child(sigContent, "dblp:signatureDblpName").child_value();
+			LOG_INFO("Found creator: " + std::string(c.id) + ", " + std::string(c.orcid) + ", " + std::string(c.name));
+			creators.push_back(c);
 		}
 	}
 
-	if (currAuthors.size() != currCreators.size()) {
-		printError("Number of authors and creators do not match for paper " + currPaperID + ": " +
-			std::to_string(currAuthors.size()) + " vs " + std::to_string(currCreators.size()));
-		return 0;
+	// Rules: the record is skipped without authors, with differing numbers of people and signatures, without
+	// a title, or without any year
+	if (numPeople != creators.size()) {
+		printError("Number of authors and creators do not match for paper " + std::string(currPaperID) + ": " +
+			std::to_string(numPeople) + " vs " + std::to_string(creators.size()));
+		return;
 	}
-	if (currAuthors.size() == 0) {
-		printInfo("No authors found for paper " + currPaperID + ", skipping");
-		// printWarning("\n" + dump_node(pub));
-		return 0;
+	if (numPeople == 0) {
+		LOG_INFO("No authors found for paper " + std::string(currPaperID) + ", skipping");
+		return;
 	}
 	auto child_title = pub.child("dblp:title");
 	if (child_title == nullptr) {
-		printWarning("No title found for paper " + currPaperID + ", skipping\n" + dump_node(pub));
-		return 0;
+		printWarning("No title found for paper " + std::string(currPaperID) + ", skipping\n" + dump_node(pub));
+		return;
 	}
-	currTitle = sanitizeField(child_title.child_value());
-	printInfo("Current Title: " + currTitle);
 
 	auto child_year = pub.child("dblp:yearOfPublication");
 	if (child_year == nullptr) {
 		child_year = pub.child("dblp:yearOfEvent");
 		if (child_year == nullptr) {
-			printWarning("No year found for paper " + currPaperID + ", skipping\n" + dump_node(pub));
-			return 0;
+			printWarning("No year found for paper " + std::string(currPaperID) + ", skipping\n" + dump_node(pub));
+			return;
 		}
 	}
-	currYear = static_cast<uint16_t>(std::stoi(child_year.child_value()));
-	printInfo("Current Year: " + std::to_string(currYear));
+	const uint16_t currYear = static_cast<uint16_t>(std::stoi(child_year.child_value()));
 
-	auto res = papersToNumbers.getOrCreateID(currPaperID);
-	currPaperNumericID = std::get<0>(res);
-	printInfo("Assigned number " + std::to_string(currPaperNumericID) + " to paper ID " + currPaperID);
+	const uint32_t paperID = std::get<0>(papersToNumbers.getOrCreateID(currPaperID));
+	LOG_INFO("Assigned number " + std::to_string(paperID) + " to paper ID " + std::string(currPaperID));
 
-	std::set<int> linkedAuthors;
-	for (const auto& [authorID, authorOrcid, authorName] : currCreators) {
-		int realID = checkAuthor(authorID, authorOrcid, authorName);
-		// DBLP sometimes lists the same person twice on a paper: store one link only
-		if (linkedAuthors.insert(realID).second) {
-			papersAndAuthorsDB.storeLink(currPaperNumericID, realID);
-		}
+	thread_local std::vector<uint32_t> authorIDs;
+	authorIDs.clear();
+	for (const Creator& c : creators) {
+		const uint32_t authorID = authorsToNumbers.getOrCreateID(c.id, [&](uint32_t id, bool isNew) {
+			if (isNew) {
+				authorDB.storeItem(id, Author{ std::string(c.id), std::string(c.orcid), sanitizeField(c.name) });
+			} else {
+				mergeAuthor(authorDB.item(id), c.orcid, c.name);
+			}
+		});
+		authorIDs.push_back(authorID);
 	}
-	paperDB.storeItem(currPaperNumericID, { currPaperID, currTitle, paperType, currYear });
+	// DBLP sometimes lists the same person twice on a paper: store one link only
+	std::sort(authorIDs.begin(), authorIDs.end());
+	authorIDs.erase(std::unique(authorIDs.begin(), authorIDs.end()), authorIDs.end());
+	papersAndAuthorsDB.storeLinks(paperID, authorIDs.data(), authorIDs.size());
 
-	return 0;
+	paperDB.storeItem(paperID, Paper{ std::string(currPaperID), sanitizeField(child_title.child_value()),
+		static_cast<uint8_t>(paperType), currYear });
+}
+
+// Runs in a worker thread: a malformed record is counted and reported, but does not stop the run
+void processRecordSafely(std::string& record, ParserState::Value paperType) {
+	try {
+		processPaperBuffer(record, paperType);
+	} catch (const std::exception& e) {
+		++failedRecords;
+		printError(std::string("record skipped: ") + e.what());
+	}
 }
 
 void checkProgress(uint64_t current, uint64_t total) {
@@ -338,74 +317,190 @@ void checkProgress(uint64_t current, uint64_t total) {
 			else std::cout << " ";
 		}
 		std::cout << "] " << std::setfill(' ') << std::setw(3) << int(progress * 100.0) << " %\r";
-		//std::cout.flush();
 
 		lastProgress = current;
 	}
 }
 
+// Writes into a large buffer and hands it to the file in big pieces (a plain ofstream issues one small
+// write per few KB, which is very slow with virus scanners and network drives)
+class BufferedFile {
+public:
+	explicit BufferedFile(const std::string& path) : file(std::fopen(path.c_str(), "wb")) {
+		if (!file) throw std::runtime_error("Failed to create " + path);
+		buffer.reserve(kFlushSize + 4096);
+	}
+	~BufferedFile() { close(); }
+	BufferedFile(const BufferedFile&) = delete;
+	BufferedFile& operator=(const BufferedFile&) = delete;
+
+	BufferedFile& operator<<(std::string_view s) { buffer.append(s); flushIfFull(); return *this; }
+	BufferedFile& operator<<(char c) { buffer.push_back(c); return *this; }
+	BufferedFile& operator<<(uint64_t v) {
+		char tmp[24];
+		auto r = std::to_chars(tmp, tmp + sizeof(tmp), v);
+		buffer.append(tmp, r.ptr - tmp);
+		return *this;
+	}
+	void close() {
+		if (!file) return;
+		flush();
+		std::fclose(file);
+		file = nullptr;
+	}
+
+private:
+	static constexpr size_t kFlushSize = size_t(8) << 20;
+	void flushIfFull() { if (buffer.size() >= kFlushSize) flush(); }
+	void flush() {
+		if (!buffer.empty() && std::fwrite(buffer.data(), 1, buffer.size(), file) != buffer.size()) {
+			throw std::runtime_error("Failed to write output (disk full?)");
+		}
+		buffer.clear();
+	}
+	std::FILE* file;
+	std::string buffer;
+};
+
+// text for use inside a JSON string (Windows paths contain backslashes)
+std::string jsonEscape(const std::string& s) {
+	std::string out;
+	for (char c : s) {
+		if (c == '\\' || c == '"') out += '\\';
+		if (static_cast<unsigned char>(c) < 0x20) continue;
+		out += c;
+	}
+	return out;
+}
+
 void dumpData(const std::string& inputFilePath) {
-	// File streams
-	std::ofstream papersFile("dblp_papers.csv");
-	std::ofstream authorsFile("dblp_authors.csv");
-	std::ofstream papersAuthorsFile("dblp_papers_authors.csv");
-	std::ofstream metadataFile("dblp_metadata.json");
+	uint64_t papersWritten = 0, authorsWritten = 0;
+	std::atomic<uint64_t> missing{ 0 };
 
-	// Initialize files
-	papersFile << "NumericID\tDBLP\tTitle\tType\tYear\n";
-	authorsFile << "NumericID\tDBLP\tName\tORCID\n";
-	papersAuthorsFile << "PaperID\tAuthorID\n";
-
-	std::cout << "Dumping papers..." << std::endl;
-	for (uint32_t p = 1; p <= papersToNumbers.getMaxID(); ++p) {
-		if (p % 100000 == 0) {
-			checkProgress(p, papersToNumbers.getMaxID());
+	// The three files are independent, so they are written at the same time
+	auto dumpPapers = [&]() {
+		BufferedFile papersFile("dblp_papers.csv");
+		papersFile << "NumericID\tDBLP\tTitle\tType\tYear\n";
+		const uint32_t maxPaper = papersToNumbers.getMaxID();
+		for (uint32_t p = 1; p <= maxPaper; ++p) {
+			const Paper& paper = paperDB.getItem(p);
+			if (paper.id.empty()) { ++missing; continue; }  // an ID that was handed out but never stored
+			papersFile << uint64_t(p) << '\t' << paper.id << '\t' << paper.title << '\t' << uint64_t(paper.type) << '\t'
+				<< uint64_t(paper.year) << '\n';
+			++papersWritten;
 		}
-		auto paper = paperDB.getItem(p);
-		papersFile << p << "\t" << paper.id << "\t" << paper.title << "\t" << unsigned(paper.type) << "\t" << paper.year << "\n";
-	}
-	std::cout << std::endl << "Dumping authors..." << std::endl;
-	for (uint32_t a = 1; a <= authorsToNumbers.getMaxID(); ++a) {
-		if (a % 100000 == 0) {
-			checkProgress(a, authorsToNumbers.getMaxID());
+	};
+	auto dumpAuthors = [&]() {
+		BufferedFile authorsFile("dblp_authors.csv");
+		authorsFile << "NumericID\tDBLP\tName\tORCID\n";
+		const uint32_t maxAuthor = authorsToNumbers.getMaxID();
+		for (uint32_t a = 1; a <= maxAuthor; ++a) {
+			const Author& author = authorDB.getItem(a);
+			if (author.id.empty()) { ++missing; continue; }
+			authorsFile << uint64_t(a) << '\t' << author.id << '\t' << author.name << '\t' << author.orcid << '\n';
+			++authorsWritten;
 		}
-		auto author = authorDB.getItem(a);
-		authorsFile << a << "\t" << author.id << "\t" << author.name << "\t" << author.orcid << "\n";
-	}
-	std::cout << std::endl << "Dumping relations..." << std::endl;
-	for (size_t r = 0; r < papersAndAuthorsDB.size(); ++r) {
-		if (r % 100000 == 0) {
-			checkProgress(r, papersAndAuthorsDB.size());
+	};
+	auto dumpLinks = [&]() {
+		BufferedFile papersAuthorsFile("dblp_papers_authors.csv");
+		papersAuthorsFile << "PaperID\tAuthorID\n";
+		for (const auto& link : papersAndAuthorsDB) {
+			papersAuthorsFile << uint64_t(link.first) << '\t' << uint64_t(link.second) << '\n';
 		}
-		auto link = papersAndAuthorsDB.getItem(r);
-		papersAuthorsFile << link.first << "\t" << link.second << "\n";
+	};
+	std::cout << "Dumping papers, authors and relations..." << std::endl;
+	auto authorsTask = std::async(std::launch::async, dumpAuthors);
+	auto linksTask = std::async(std::launch::async, dumpLinks);
+	dumpPapers();
+	authorsTask.get();  // also passes on exceptions of the other threads
+	linksTask.get();
+	std::cout << "Dumping completed." << std::endl;
+	if (missing) {
+		printError(std::to_string(missing) + " IDs were handed out but their records were never stored");
 	}
-	std::cout << std::endl << "Dumping completed." << std::endl;
 
 	// get datetime of rdf file
 	auto lwt = std::filesystem::last_write_time(inputFilePath);
+	std::ofstream metadataFile("dblp_metadata.json");
 	metadataFile << "{\n";
-	metadataFile << "  \"source_file\": \"" << inputFilePath << "\",\n";
+	metadataFile << "  \"source_file\": \"" << jsonEscape(inputFilePath) << "\",\n";
 	metadataFile << "  \"source_file_last_write_time\": \"" << lwt << "\",\n";
-	metadataFile << "  \"total_papers\": " << papersToNumbers.getMaxID() << ",\n";
-	metadataFile << "  \"total_authors\": " << authorsToNumbers.getMaxID() << ",\n";
-	metadataFile << "  \"total_links\": " << papersAndAuthorsDB.size() << "\n";
+	metadataFile << "  \"total_papers\": " << papersWritten << ",\n";
+	metadataFile << "  \"total_authors\": " << authorsWritten << ",\n";
+	metadataFile << "  \"total_links\": " << papersAndAuthorsDB.size() << ",\n";
+	metadataFile << "  \"records_failed\": " << failedRecords.load() << "\n";
 	metadataFile << "}\n";
-
-	// Close files
-	papersFile.close();
-	authorsFile.close();
-	papersAuthorsFile.close();
-	metadataFile.close();
 }
 
-void checkGZProgress(uint64_t lineCount, gzFile file, uint64_t total) {
-	if (lineCount % 1000000 == 0) {
-		auto pos = zng_gztell(file);
-		if (pos > -1) {
-			checkProgress(static_cast<uint64_t>(pos), total);
-		}
+// Reads the dump in large blocks and hands every publication record to the worker pool
+void readDump(const std::string& inputFilePath, ThreadPool& threadPool) {
+	gzFile file = zng_gzopen(inputFilePath.c_str(), "rb");
+	if (!file) {
+		throw std::runtime_error("Failed to open file with zlib: " + inputFilePath);
 	}
+	zng_gzbuffer(file, 1 << 20);
+	const uint64_t compressedSize = std::filesystem::file_size(inputFilePath);
+
+	constexpr size_t kMaxRecord = size_t(256) << 20;
+	std::vector<char> block(size_t(32) << 20);
+	std::string carry;   // the incomplete last line of the previous block
+	std::string record;  // the record being collected, line by line
+	record.reserve(1 << 14);
+	ParserState::Value state = ParserState::Searching;
+
+	auto handleLine = [&](std::string_view line) {
+		if (state == ParserState::Searching) {
+			state = ParserState::startedEntity(line);
+			if (state != ParserState::Searching) {
+				record.clear();
+				record.append(line);
+				record.push_back('\n');
+			}
+			return;
+		}
+		record.append(line);
+		record.push_back('\n');
+		if (ParserState::endsEntity(line, state)) {
+			auto task = std::make_shared<std::string>(std::move(record));
+			const ParserState::Value type = state;
+			threadPool.enqueue([task, type]() { processRecordSafely(*task, type); });
+			record = std::string();
+			record.reserve(1 << 14);
+			state = ParserState::Searching;
+		} else if (record.size() > kMaxRecord) {
+			throw std::runtime_error("record larger than 256 MB (malformed dump?): " + std::string(firstLine(record)));
+		}
+	};
+
+	int numRead = 0;
+	while ((numRead = zng_gzread(file, block.data(), static_cast<unsigned>(block.size()))) > 0) {
+		const char* p = block.data();
+		const char* const end = p + numRead;
+		while (p < end) {
+			const char* newline = static_cast<const char*>(std::memchr(p, '\n', end - p));
+			if (!newline) {
+				carry.append(p, end - p);
+				break;
+			}
+			if (carry.empty()) {
+				handleLine(std::string_view(p, newline - p));
+			} else {
+				carry.append(p, newline - p);
+				handleLine(carry);
+				carry.clear();
+			}
+			p = newline + 1;
+		}
+		const auto offset = zng_gzoffset(file);
+		if (offset > 0) checkProgress(static_cast<uint64_t>(offset), compressedSize);
+	}
+	if (numRead < 0) {
+		int errnum = 0;
+		const char* message = zng_gzerror(file, &errnum);
+		throw std::runtime_error(std::string("Error while reading ") + inputFilePath + ": " + (message ? message : "unknown"));
+	}
+	if (!carry.empty()) handleLine(carry);  // last line without line break
+	zng_gzclose(file);
 }
 
 bool checkLockFile(const std::string& lockFilePath) {
@@ -429,92 +524,45 @@ void removeLockFile(const std::string& lockFilePath) {
 	}
 }
 
-int main() {
-#ifdef DEBUGGING
-	// hack for broken visual studio cwd
-	std::filesystem::current_path("u:\\src\\quickDBLP");
-#endif
-
-	//const std::string inputFilePath = "mini.rdf.gz";
-	const std::string inputFilePath = "dblp.rdf.gz";
+int main(int argc, char** argv) {
+	const std::string inputFilePath = argc > 1 ? argv[1] : "dblp.rdf.gz";
 	const std::string lockFilePath = inputFilePath + ".lock";
 
 	try {
-#ifndef DEBUGGING
 		if (!checkLockFile(lockFilePath)) {
 			return 1;
 		}
-#endif
 
-		std::vector<char> hugebuf;
-		hugebuf.resize(1024 * 1024 * 256);
-
-		auto file = zng_gzopen(inputFilePath.c_str(), "rb");
-#ifdef DEBUGGING
-		uint64_t fileSizeGZ = 38980527145;
-#else
-		uint64_t fileSizeGZ = 0;
 		{
-			Timer timer("Checking database size...");
-			if (!file) {
-				std::cerr << "Failed to open file with zlib: " << inputFilePath << "\n";
-				removeLockFile(lockFilePath);
-				return 1;
-			}
-			int numRead = 0;
-			// start timer
-
-			while ((numRead = zng_gzread(file, hugebuf.data(), hugebuf.size())) > 0) {
-				fileSizeGZ += numRead;
-			}
-			zng_gzclose(file);
-			std::cout << "File size (zlib): " << fileSizeGZ << " bytes\n";
+			// Size the tables for the input (about 9M papers, 4.5M authors and 31M links per 2.7 GB of dump) so
+			// that nothing has to be rehashed or reallocated while all threads wait for it.
+			const uint64_t compressedSize = std::filesystem::exists(inputFilePath) ? std::filesystem::file_size(inputFilePath) : 0;
+			papersToNumbers.reserve(std::max<uint64_t>(1000, compressedSize / 300));
+			authorsToNumbers.reserve(std::max<uint64_t>(1000, compressedSize / 600));
+			papersAndAuthorsDB.reserve(std::max<uint64_t>(1000, compressedSize / 85));
 		}
-#endif
-		
-		file = zng_gzopen(inputFilePath.c_str(), "rb");
+
 		{
 			Timer timer("Processing database dump...");
-			// Process file
-			ThreadPool threadPool(std::thread::hardware_concurrency() * 2);
-			std::string line;
-			uint64_t lineCount = 0;
-			int state = 0; // 0 = searching, 1 = inproceedings, 3 = article
-			ParserState parserState, oldState;
-			std::vector<std::string> paperBuffer;
-
-			while (zng_gzgets(file, hugebuf.data(), hugebuf.size()) != nullptr) {
-				line = hugebuf.data();
-				checkGZProgress(++lineCount, file, fileSizeGZ);
-				parserState.checkForStateChange(line);
-				if (parserState != oldState) {
-					if (oldState != ParserState::Searching) {
-						printInfo("End of " + oldState.getEntity() + " entry");
-						paperBuffer.push_back(line);
-						ParserState::Value paperType = oldState;
-#ifdef USE_THREAD_POOL
-						threadPool.enqueue([paperBuffer, paperType]() { processPaperBuffer(paperBuffer, paperType); });
-#else
-						processPaperBuffer(paperBuffer, paperType);
-#endif
-					} else {
-						printInfo("Found " + parserState.getEntity() + " entry");
-						paperBuffer.clear();
-						paperBuffer.push_back(line);
-					}
-					oldState = parserState;
-				} else {
-					if (parserState != ParserState::Searching) {
-						paperBuffer.push_back(line);
-					}
-				}
-			}
+			// One thread reads and cuts up the dump; the other cores parse. More threads than cores only add
+			// lock contention.
+			const size_t workers = std::max(2u, std::thread::hardware_concurrency());
+			ThreadPool threadPool(workers);
+			readDump(inputFilePath, threadPool);
 			std::cout << std::endl << "Waiting for threads to finish parsing... ";
 			threadPool.waitForAll();
 			std::cout << "Done." << std::endl;
 		}
-		std::cout << "saving CSVs..." << std::endl;
-		dumpData(inputFilePath);
+		{
+			Timer timer("Saving CSVs...");
+			dumpData(inputFilePath);
+		}
+		if (failedRecords > 0) {
+			printError(std::to_string(failedRecords.load()) + " malformed records were skipped; the output is incomplete");
+			removeLockFile(lockFilePath);
+			std::cout.flush();
+			std::quick_exit(2);
+		}
 	} catch (const std::exception& e) {
 		printError("Exception: " + std::string(e.what()));
 		removeLockFile(lockFilePath);
@@ -525,5 +573,8 @@ int main() {
 		return 1;
 	}
 	removeLockFile(lockFilePath);
-	return 0;
+	// Everything is written and closed. Skip the destructors of the big tables: freeing millions of small
+	// strings would only delay the end of the program by several seconds.
+	std::cout.flush();
+	std::quick_exit(0);
 }

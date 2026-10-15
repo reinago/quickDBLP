@@ -137,8 +137,21 @@ def test_duplicate_links_are_removed_and_counted(snapshot_dir, tmp_path):
 def test_clean_snapshot_has_no_integrity_problems(db):
     assert db.meta()["integrity"] == {
         "duplicate_links_removed": 0, "links_to_missing_papers": 0,
-        "links_to_missing_authors": 0, "papers_without_authors": 0,
+        "links_to_missing_authors": 0, "papers_without_authors": 0, "parser_records_failed": 0,
     }
+
+
+def test_records_the_parser_failed_on_are_reported(snapshot_dir, tmp_path):
+    meta_path = snapshot_dir / "dblp_metadata.json"
+    meta = json.loads(meta_path.read_text())
+    meta["records_failed"] = 3
+    meta_path.write_text(json.dumps(meta))
+    build_snapshot(snapshot_dir, tmp_path / "dblp.duckdb")
+    db = Database(tmp_path / "dblp.duckdb")
+    try:
+        assert db.meta()["integrity"]["parser_records_failed"] == 3
+    finally:
+        db.close()
 
 
 def test_lost_records_are_reported(snapshot_dir, tmp_path, caplog):
