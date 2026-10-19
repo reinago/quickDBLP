@@ -65,9 +65,7 @@ summary { cursor: pointer; font-weight: 600; }
 /* filters */
 .filters { display: flex; flex-wrap: wrap; gap: .75rem 1.5rem; align-items: end; margin-bottom: .5rem; }
 .filter { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; }
-fieldset.filter { border: 1px solid var(--border); border-radius: 6px; padding: .25rem .6rem; }
-fieldset legend { font-weight: 600; padding: 0 .3rem; }
-fieldset label { font-weight: normal; margin-right: .6rem; white-space: nowrap; }
+.filter-label { font-weight: 600; }
 .filter input[type=search] { width: 18rem; margin-top: 0; }
 #years-label { min-width: 11rem; }
 
@@ -84,7 +82,7 @@ tr.detail td { background: var(--bg); padding-left: 2.5rem; }
 tr.detail ul { margin: 0; padding-left: 1rem; }
 tr.detail li { margin: .15rem 0; }
 .toggle { padding: .25rem .4rem; border: 0; background: none; line-height: 1; }
-.tag { font-size: .8rem; color: var(--muted); border: 1px solid var(--border); border-radius: 3px; padding: 0 .3em; margin-left: .3em; }
+.tag { font-size: .8rem; color: var(--muted); border: 1px solid var(--border); border-radius: 4px; padding: 0 .35em; margin-left: .3em; }
 
 /* status badges: colour is never the only cue, the text says it too */
 .badge { display: inline-block; border-radius: 4px; padding: .05rem .5rem; font-size: .85rem; font-weight: 600; }
@@ -109,7 +107,6 @@ tr.detail li { margin: .15rem 0; }
 [role=tab][aria-selected=false] .step { background: var(--none); }
 
 #shared-filters { padding-bottom: .75rem; margin-bottom: .75rem; border-bottom: 1px solid var(--border); }
-.list-filter { margin-bottom: .25rem; }
 td.links { white-space: nowrap; font-size: .9rem; }
 .small-text { font-size: .85rem; }
 
@@ -122,3 +119,65 @@ summary::before {
 }
 details[open] > summary::before { transform: rotate(90deg); }
 .toggle svg { display: block; }
+
+/* data updates: title, data info and update controls share one header row (and wrap on narrow screens) */
+header { display: flex; flex-wrap: wrap; align-items: baseline; gap: .1rem 1.25rem; }
+#snapshot-info { margin: 0; }
+#update-panel { display: flex; flex-wrap: wrap; align-items: center; gap: .2rem .6rem; font-size: .9rem; }
+#update-status { color: var(--muted); }
+#update-status.failed { color: var(--bad); }
+#update-progress { width: 12rem; height: .9rem; accent-color: var(--accent); }
+/* floating windows (popovers) opened by a button and placed under it by the script */
+.floating { position: fixed; inset: auto; margin: 0; width: min(64rem, calc(100vw - 1rem)); padding: .5rem .75rem;
+  border: 1px solid var(--border); border-radius: 8px; background: var(--card); color: var(--fg); box-shadow: 0 8px 28px rgba(0, 0, 0, .25); }
+.floating[hidden] { display: none; }
+#guess-window { width: min(42rem, calc(100vw - 1rem)); }
+.problem { color: var(--bad); margin: .25rem 0; }
+.popover-head { display: flex; align-items: center; gap: .5rem; margin-bottom: .4rem; }
+.popover-head strong { flex: 1; }
+#update-log { max-height: min(60vh, 28rem); overflow: auto; margin: 0; padding: .5rem; background: var(--none-bg); border-radius: 6px; font-size: .8rem; white-space: pre-wrap; }
+
+/* compact controls: the label next to its field, one toolbar row for the list */
+.field-head { display: flex; align-items: center; gap: .75rem; margin: .5rem 0 .25rem; }
+.field-head label { margin-right: auto; }
+textarea { resize: vertical; }
+.inline-row { align-items: center; }
+.inline-row .inline-field { display: inline-flex; align-items: center; gap: .5rem; }
+.inline-row .inline-field select { margin-top: 0; }
+.toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem .75rem; margin: .25rem 0 .5rem; }
+.toolbar input[type=search] { width: 11rem; margin-top: 0; }
+.toolbar label.inline { margin-left: 0; }
+.toolbar #conflict-summary { margin-left: auto; }
+
+/* paper types: one muted colour each, shared by the toggle tags of the filter and the tags in the paper lists.
+   Colours: ColorBrewer "Set3" (qualitative, pastel; Cynthia Brewer, Mark Harrower and The Pennsylvania State University,
+   Apache License 2.0, https://colorbrewer2.org). In dark mode they are mixed down towards the card colour. */
+.tag[data-type] { background: var(--c); color: #1d1f23; border-color: color-mix(in srgb, var(--c) 60%, #000); }
+@media (prefers-color-scheme: dark) {
+  .tag[data-type] { background: color-mix(in srgb, var(--c) 32%, #1e2125); color: color-mix(in srgb, var(--c) 80%, #fff);
+    border-color: color-mix(in srgb, var(--c) 45%, #1e2125); }
+}
+.tag[data-type="1"] { --c: #80b1d3; }   /* Inproceedings: blue */
+.tag[data-type="2"] { --c: #8dd3c7; }   /* Incollection: teal */
+.tag[data-type="3"] { --c: #fdb462; }   /* Article: orange */
+.tag[data-type="4"] { --c: #bc80bd; }   /* Book: purple */
+.tag[data-type="5"] { --c: #fccde5; }   /* Part: pink */
+.tag[data-type="6"] { --c: #b3de69; }   /* Informal: green */
+.tag[data-type="7"] { --c: #ffed6f; }   /* Data: yellow */
+.tag[data-type="8"] { --c: #bebada; }   /* Reference: lavender */
+.tag[data-type="9"] { --c: #d9d9d9; }   /* Editorship: grey */
+.tag[data-type="10"] { --c: #fb8072; }  /* Withdrawn: salmon */
+
+/* the filter's tags: bigger, clickable; the real checkbox covers the tag without being visible */
+.type-pill { position: relative; display: inline-flex; align-items: center; gap: .3em; margin: .15rem .25rem .15rem 0;
+  padding: .1rem .6rem; font-size: .85rem; font-weight: normal; cursor: pointer; user-select: none; }
+.type-pill input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
+.type-pill.on::before { content: "\2713"; font-weight: 700; }
+.type-pill:not(.on) { background: transparent; color: var(--muted); border-style: dashed; opacity: .75; }
+.type-pill:hover { filter: brightness(.96); }
+.type-pill:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* the label stays beside the first row of tags, which wrap among themselves */
+.filter-types { flex-wrap: nowrap; align-items: flex-start; }
+.filter-types .filter-label { padding-top: .3rem; white-space: nowrap; }
+#type-boxes { display: flex; flex-wrap: wrap; flex: 1; }

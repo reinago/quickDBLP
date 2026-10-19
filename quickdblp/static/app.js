@@ -60,6 +60,21 @@ function debounce(fn, ms) {
   return (...args) => { clearTimeout(timer); timer = setTimeout(() => fn(...args), ms); };
 }
 
+// A text box that starts small and grows with its content, up to a limit (then it scrolls)
+function autoGrow(box, maxLines = 12) {
+  const resize = () => {
+    box.style.height = "auto";
+    const style = getComputedStyle(box);
+    const line = parseFloat(style.lineHeight) || parseFloat(style.fontSize) * 1.4;
+    const limit = line * maxLines + parseFloat(style.paddingTop) + parseFloat(style.paddingBottom);
+    const wanted = box.scrollHeight + parseFloat(style.borderTopWidth) + parseFloat(style.borderBottomWidth);
+    box.style.height = `${Math.min(wanted, limit)}px`;
+    box.style.overflowY = wanted > limit ? "auto" : "hidden";
+  };
+  box.addEventListener("input", resize);
+  return resize;
+}
+
 function splitList(text) {
   const seen = new Set();
   return text.split(/[;\n]/).map((s) => s.trim()).filter((s) => s && !seen.has(s) && seen.add(s));
@@ -133,6 +148,10 @@ let refreshCounter = 0;     // drop responses of outdated requests
 async function loadMeta() {
   try {
     const meta = await api("/api/meta");
+    if (!meta.ready) {
+      $("#snapshot-info").textContent = "No data loaded yet.";
+      return;
+    }
     state.paperTypes = meta.paper_types;
     state.paperTypeHelp = meta.paper_type_help || {};
     state.defaultExcludedTypes = meta.default_excluded_types || [];
@@ -156,20 +175,36 @@ async function loadMeta() {
   }
 }
 
+// The paper types as round tags that toggle: filled and ticked when included, outlined and faded when not. They have
+// the colour of the same tag in the paper lists (see style.css). Each is still a real checkbox (invisible, on top).
 function buildTypeBoxes() {
-  $("#type-boxes").replaceChildren(...Object.entries(state.paperTypes).map(([id, name]) =>
-    el("label", { title: state.paperTypeHelp[id] },
-      el("input", { type: "checkbox", value: id, checked: !state.defaultExcludedTypes.includes(Number(id)), onchange: refresh }),
-      " " + name)));
+  $("#type-boxes").replaceChildren(...Object.entries(state.paperTypes).map(([id, name]) => {
+    const input = el("input", { type: "checkbox", value: id, checked: !state.defaultExcludedTypes.includes(Number(id)) });
+    const pill = el("label", { class: "tag type-pill", "data-type": id, title: state.paperTypeHelp[id] }, input, name);
+    const sync = () => pill.classList.toggle("on", input.checked);
+    input.addEventListener("change", () => { sync(); refresh(); });
+    sync();
+    return pill;
+  }));
 }
 
 // ---------- step 1: authors ----------
 
 $("#guess-btn").addEventListener("click", (event) => busy(event.target, async () => {
-  const { authors } = await api("/api/guess", { source: $("#guess-source").value, html: $("#guess-html").value });
-  if (!authors.length) throw new Error("The page was recognised but contains no authors.");
+  const problem = $("#guess-error");
+  problem.hidden = true;
+  let authors;
+  try {
+    ({ authors } = await api("/api/guess", { source: $("#guess-source").value, html: $("#guess-html").value }));
+    if (!authors.length) throw new Error("The page was recognised but contains no authors.");
+  } catch (e) {
+    problem.textContent = e.message;  // shown in the window itself, where the user is looking
+    problem.hidden = false;
+    return;
+  }
   $("#author-input").value = authors.join("\n");
-  $("#guess-box").open = false;
+  growAuthors();
+  closeGuessWindow();
   await searchAuthors(event.target);
 }));
 
@@ -341,7 +376,7 @@ function renderConflicts() {
   $("#conflict-summary").textContent =
     `${plural(rows.length, "co-author")}` +
     (needle ? ` of ${state.conflicts.coauthors.length} match the filter` : "") +
-    `, ${plural(papers, "shared paper")}` + (since ? ` since ${since}` : " (all years)") + "." +
+    `, ${plural(papers, "paper")}` + (since ? ` since ${since}` : " (all years)") + "." +
     (state.conflicts.truncated ? " Only the first 5000 co-authors are shown; narrow the filters." : "");
 
   const head = el("tr", {}, el("th"), columns.map((c) =>
@@ -383,7 +418,7 @@ function conflictRows(entry, colspan, showVia) {
 
 function paperList(papers) {
   return el("ul", {}, papers.map((p) =>
-    el("li", {}, `${p.year} `, link(p.dblp, p.title), el("span", { class: "tag", text: p.type }))));
+    el("li", {}, `${p.year} `, link(p.dblp, p.title), el("span", { class: "tag", "data-type": p.type_id, text: p.type }))));
 }
 
 $("#years").addEventListener("input", refresh);
@@ -449,6 +484,7 @@ function candidateLine(candidate, withChoice, index) {
     line.append(" · ", el("button", { type: "button", class: "link", onclick: () => {
       state.reviewerQueries[index] = candidate.dblp;
       $("#reviewer-input").value = state.reviewerQueries.join("\n");
+      growReviewers();
       busy($("#reviewer-check"), () => runReviewerCheck());
     } }, "use this profile"));
   }
@@ -462,11 +498,146 @@ function candidateLine(candidate, withChoice, index) {
   return line;
 }
 
+// ---------- data updates (the server refreshes its data in the background) ----------
+
+const update = { timer: null, wasRunning: false, flash: "", flashUntil: 0 };
+
+const formatDate = (value) => {
+  const date = new Date(typeof value === "number" ? value * 1000 : value);
+  return isNaN(date) ? "?" : date.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+};
+
+function describeUpdate(status) {
+  const job = status.job;
+  if (job && job.state === "running") {
+    const what = status.ready ? "Updating the data" : "Importing the data for the first time";
+    return `${what} (${job.phase}${job.detail ? ": " + job.detail : ""})`;
+  }
+  if (Date.now() < update.flashUntil) return update.flash;
+  if (job && job.state === "failed" && status.last_error) {
+    return `The last update failed: ${status.last_error.message}`;
+  }
+  if (!status.ready) return "There is no data yet.";
+  let text;
+  if (status.remote && status.remote.update_available) {
+    text = `A newer DBLP dump is available (${formatDate(status.remote.last_modified)}).`;
+  } else if (status.remote) {
+    text = `Up to date with dblp.org (checked ${formatDate(status.remote.checked_at)}).`;
+  } else {
+    text = "Not checked for updates yet.";
+  }
+  if (status.next_check_at) text += ` Next automatic check: ${formatDate(status.next_check_at)}.`;
+  return text;
+}
+
+function renderUpdate(status) {
+  $("#update-panel").hidden = !status.enabled;
+  if (!status.enabled) return;
+  const job = status.job;
+  const running = job && job.state === "running";
+  $("#update-status").textContent = describeUpdate(status);
+  $("#update-status").classList.toggle("failed", !running && job && job.state === "failed" && !!status.last_error);
+  const button = $("#update-btn");
+  button.disabled = running;
+  button.textContent = running ? "Updating…" : (status.remote && status.remote.update_available ? "Update now" : "Check for updates");
+  const progress = $("#update-progress");
+  progress.hidden = !running;
+  if (running) progress.value = job.progress;
+  const lines = job ? job.log : [];
+  $("#update-log-btn").hidden = !lines.length;
+  setUpdateLog(lines);
+}
+
+function setUpdateLog(lines) {
+  const pre = $("#update-log");
+  const atEnd = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 20;
+  pre.textContent = lines.join(String.fromCharCode(10));
+  if (atEnd) pre.scrollTop = pre.scrollHeight;  // follows a running update, unless the reader scrolled up
+}
+
+// Floating windows (popovers): opened by a button, placed under it; Esc, a click outside or the cross closes them.
+// Returns a function that closes the window.
+function setupFloatingWindow(win, openButton, closeButton, onOpen = () => {}) {
+  const place = () => {
+    const anchor = openButton.getBoundingClientRect();
+    const width = win.offsetWidth || Math.min(window.innerWidth - 16, 900);
+    win.style.top = `${anchor.bottom + 6}px`;
+    win.style.left = `${Math.max(8, Math.min(anchor.left, window.innerWidth - width - 8))}px`;
+  };
+  if ("popover" in HTMLElement.prototype) {
+    win.addEventListener("beforetoggle", (event) => { if (event.newState === "open") place(); });
+    win.addEventListener("toggle", (event) => {
+      if (event.newState !== "open") return;
+      place();  // now that it is visible its real width is known
+      onOpen();
+    });
+    return () => win.hidePopover();
+  }
+  // browsers without the popover API: the same window, opened and closed by the buttons
+  win.removeAttribute("popover");
+  win.hidden = true;
+  for (const button of [openButton, closeButton]) button.removeAttribute("popovertarget");
+  openButton.addEventListener("click", () => { win.hidden = !win.hidden; if (!win.hidden) { place(); onOpen(); } });
+  closeButton.addEventListener("click", () => { win.hidden = true; });
+  return () => { win.hidden = true; };
+}
+
+$("#update-log-copy").addEventListener("click", async (event) => {
+  const button = event.target;
+  try { await navigator.clipboard.writeText($("#update-log").textContent); button.textContent = "Copied"; }
+  catch (e) { button.textContent = "Copy failed"; }  // clipboard access needs https or localhost
+  setTimeout(() => { button.textContent = "Copy"; }, 1500);
+});
+
+async function pollUpdate() {
+  clearTimeout(update.timer);
+  let delay = 30000;
+  try {
+    const status = await api("/api/refresh");
+    renderUpdate(status);
+    const running = !!status.job && status.job.state === "running";
+    if (update.wasRunning && !running && status.job && status.job.state === "succeeded") {
+      update.flash = "The data was updated; new searches use it.";
+      update.flashUntil = Date.now() + 20000;
+      renderUpdate(status);
+      loadMeta();
+    }
+    update.wasRunning = running;
+    if (running) delay = 2000;
+  } catch (e) { /* the server is busy or restarting: try again later */ }
+  update.timer = setTimeout(pollUpdate, delay);
+}
+
+$("#update-btn").addEventListener("click", async (event) => {
+  event.target.disabled = true;
+  try {
+    const answer = await api("/api/refresh", {});
+    const reasons = {
+      up_to_date: "Already up to date.",
+      already_running: "An update is already running.",
+      recent_failure: `The last attempt failed; try again after ${answer.retry_at ? new Date(answer.retry_at * 1000).toLocaleTimeString() : "a while"}.`,
+      check_failed: `Could not ask dblp.org: ${answer.message || "no answer"}`,
+    };
+    update.flash = reasons[answer.reason] || "";
+    update.flashUntil = answer.started ? 0 : Date.now() + 10000;
+  } catch (e) {
+    showError(e.message);
+  }
+  pollUpdate();
+});
+
 // ---------- init ----------
 
+const growAuthors = autoGrow($("#author-input"));
+const growReviewers = autoGrow($("#reviewer-input"));
+const closeGuessWindow = setupFloatingWindow($("#guess-window"), $("#guess-open"), $("#guess-close"), () => $("#guess-html").focus());
+setupFloatingWindow($("#update-log-window"), $("#update-log-btn"), $("#update-log-close"), () => {
+  $("#update-log").scrollTop = $("#update-log").scrollHeight;
+});
 submitOnEnter($("#author-input"), $("#author-search"));
 submitOnEnter($("#reviewer-input"), $("#reviewer-check"));
 submitOnEnter($("#guess-html"), $("#guess-btn"));
 applyTabs();
 updateYearsLabel();
 loadMeta();
+pollUpdate();

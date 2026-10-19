@@ -11,6 +11,21 @@
 <header>
   <h1>quickDBLP</h1>
   <p id="snapshot-info" class="muted">Loading…</p>
+  <div id="update-panel" hidden>
+    <span id="update-status"></span>
+    <button id="update-btn" type="button" class="small">Check for updates</button>
+    <progress id="update-progress" max="1" value="0" hidden></progress>
+    <button id="update-log-btn" type="button" class="small" popovertarget="update-log-window" hidden>Log</button>
+  </div>
+  <!-- the log of the last update floats above the page (popover): Esc, a click outside or the cross closes it -->
+  <div id="update-log-window" class="floating" popover>
+    <div class="popover-head">
+      <strong>Update log</strong>
+      <button id="update-log-copy" type="button" class="small">Copy</button>
+      <button id="update-log-close" type="button" class="small" popovertarget="update-log-window" popovertargetaction="hide" aria-label="Close">✕</button>
+    </div>
+    <pre id="update-log"></pre>
+  </div>
 </header>
 
 <div id="error" role="alert" hidden></div>
@@ -21,27 +36,13 @@
     <h2><span class="step">1</span> Authors</h2>
     <p class="muted">Find the DBLP profiles of the submission's authors. Names or DBLP profile URLs, separated by <kbd>;</kbd> or new lines. <kbd>Enter</kbd> searches, <kbd>Shift</kbd>+<kbd>Enter</kbd> adds a line.</p>
 
-    <details id="guess-box">
-      <summary>Extract authors from a submission page</summary>
-      <div class="row">
-        <label>Source
-          <select id="guess-source">
-            <option value="pcs">PCS</option>
-            <option value="easychair">EasyChair</option>
-          </select>
-        </label>
-        <button id="guess-btn" type="button">Extract authors</button>
-      </div>
-      <label class="block">Page source (HTML)
-        <textarea id="guess-html" rows="5" placeholder="Paste the HTML source of the submission page here"></textarea>
-      </label>
-    </details>
-
-    <label class="block">Authors
-      <textarea id="author-input" rows="3" placeholder="Jane Doe; John Smith; https://dblp.org/pid/…"></textarea>
-    </label>
-    <div class="row">
-      <label>Matching
+    <div class="field-head">
+      <label for="author-input">Authors</label>
+      <button id="guess-open" type="button" class="small" popovertarget="guess-window">Extract from a submission page…</button>
+    </div>
+    <textarea id="author-input" rows="2" placeholder="Jane Doe; John Smith; https://dblp.org/pid/…"></textarea>
+    <div class="row inline-row">
+      <label class="inline-field">Matching
         <select id="author-matcher">
           <option value="prefix">Prefix</option>
           <option value="accent">Accent-insensitive prefix</option>
@@ -65,10 +66,10 @@
         <output id="years-label"></output>
         <label class="inline"><input id="any-year" type="checkbox"> any year</label>
       </div>
-      <fieldset class="filter">
-        <legend>Include paper types</legend>
+      <div class="filter filter-types" role="group" aria-label="Paper types to include">
+        <span class="filter-label">Paper types</span>
         <span id="type-boxes"></span>
-      </fieldset>
+      </div>
     </div>
 
     <div id="tabs" role="tablist" aria-label="Results" hidden>
@@ -79,31 +80,22 @@
 
   <div id="step-conflicts" role="tabpanel" aria-labelledby="tab-conflicts" hidden>
 
-    <div class="filters list-filter">
-      <div class="filter">
-        <label for="conflict-filter">Filter list</label>
-        <input id="conflict-filter" type="search" placeholder="name, ORCID, paper title…">
-      </div>
-      <div class="filter">
-        <label class="inline"><input id="exclude-self" type="checkbox"> exclude the selected authors themselves</label>
-      </div>
-    </div>
-
-    <p id="conflict-summary" class="muted" aria-live="polite"></p>
-    <div class="row">
+    <div class="toolbar">
+      <input id="conflict-filter" type="search" placeholder="Filter list…" title="Shows only co-authors whose name, ORCID or a shared paper title contains this text" aria-label="Filter the list">
+      <label class="inline"><input id="exclude-self" type="checkbox"> exclude the selected authors</label>
       <button id="expand-all" type="button" class="small">Expand all</button>
       <button id="collapse-all" type="button" class="small">Collapse all</button>
+      <span id="conflict-summary" class="muted" aria-live="polite"></span>
     </div>
     <div class="table-wrap"><table id="conflict-table"></table></div>
   </div>
 
   <div id="step-reviewers" role="tabpanel" aria-labelledby="tab-reviewers" hidden>
     <p class="muted">Optional: names or DBLP URLs of the reviewers you have in mind (one per line or separated by <kbd>;</kbd>; <kbd>Enter</kbd> checks, <kbd>Shift</kbd>+<kbd>Enter</kbd> adds a line). They are checked against the conflicts of the selected authors, using the years and paper-type filters above. A selected author listed as reviewer is always a conflict.</p>
-    <label class="block">Reviewers
-      <textarea id="reviewer-input" rows="4" placeholder="Reviewer One&#10;Reviewer Two"></textarea>
-    </label>
-    <div class="row">
-      <label>Matching
+    <div class="field-head"><label for="reviewer-input">Reviewers</label></div>
+    <textarea id="reviewer-input" rows="2" placeholder="Reviewer One&#10;Reviewer Two"></textarea>
+    <div class="row inline-row">
+      <label class="inline-field">Matching
         <select id="reviewer-matcher">
           <option value="prefix">Prefix</option>
           <option value="accent">Accent-insensitive prefix</option>
@@ -118,6 +110,27 @@
   </div>
   </section>
 </main>
+
+<!-- extraction of the author list from the source of a submission page (floats above the page, opened from step 1) -->
+<div id="guess-window" class="floating" popover>
+  <div class="popover-head">
+    <strong>Extract authors from a submission page</strong>
+    <button id="guess-close" type="button" class="small" popovertarget="guess-window" popovertargetaction="hide" aria-label="Close">✕</button>
+  </div>
+  <div class="row inline-row">
+    <label class="inline-field">Source
+      <select id="guess-source">
+        <option value="pcs">PCS</option>
+        <option value="easychair">EasyChair</option>
+      </select>
+    </label>
+    <button id="guess-btn" type="button" class="primary">Extract authors</button>
+  </div>
+  <p id="guess-error" class="problem" role="alert" hidden></p>
+  <label class="block">Page source (HTML)
+    <textarea id="guess-html" rows="8" placeholder="Paste the HTML source of the submission page here"></textarea>
+  </label>
+</div>
 
 <script src="app.js"></script>
 </body>
