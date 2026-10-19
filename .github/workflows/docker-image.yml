@@ -1,0 +1,82 @@
+name: Docker image
+
+# Builds the image and pushes it to the GitHub container registry (ghcr.io). The package of a private repository is
+# private as well: pull it on the server after `docker login ghcr.io` with a token that may read packages (see Readme.md).
+# No secret enters the image: the build only uses the files of the repository.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Image name and tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/') }}
+            type=sha
+
+      - name: Build (for the smoke test)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: quickdblp-test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test the image
+        run: |
+          # the server and the parser are in the image and start; the parser reads the small sample
+          docker run --rm quickdblp-test quickdblp --help > /dev/null
+          docker run --rm -v "$PWD/mini.rdf.gz:/tmp/mini.rdf.gz:ro" -w /tmp --entrypoint sh quickdblp-test \
+            -c 'ponder_dblp /tmp/mini.rdf.gz > /dev/null && grep "\"total_papers\": 6" dblp_metadata.json'
+          # the real server starts in the container, without network (the automatic first import fails at once instead of
+          # downloading 2.7 GB), keeps answering, and serves the page
+          docker run -d --name smoke --network none quickdblp-test > /dev/null
+          ok=0
+          for i in $(seq 1 30); do
+            if docker exec smoke python -c "
+          import json, urllib.request
+          meta = json.load(urllib.request.urlopen('http://127.0.0.1:8000/api/meta', timeout=3))
+          assert meta == {'ready': False}, meta
+          assert b'quickDBLP' in urllib.request.urlopen('http://127.0.0.1:8000/', timeout=3).read()
+          " 2>/dev/null; then ok=1; break; fi
+            sleep 2
+          done
+          docker logs smoke
+          docker rm -f smoke > /dev/null
+          test "$ok" = 1
+
+      - name: Push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha

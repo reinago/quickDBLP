@@ -84,6 +84,29 @@ By default (without `--db`/`--snapshot-dir`) the server manages its data itself 
 - **Files in the data directory:** `current.json` (which database is active), `state.json`, `refresh.lock`, `downloads/` (the dump), `versions/<run>/dblp.duckdb` (the last two are kept), `logs/` (the last ten runs).
 - **API:** `GET /api/refresh` (status), `POST /api/refresh` (`{"force": false}`; answers `started`, `already_running`, `up_to_date`, `recent_failure` or `check_failed`).
 
+## Docker
+
+The `Dockerfile` builds an image with the server, Python 3.13.3 and the Linux parser (compiled in the first build stage; the image is based on Ubuntu 24.04, whose GCC 13 the parser needs). Everything that changes lives in the volume `/data`.
+
+```
+docker compose up -d --build          # build from this checkout and start (http://localhost:8000)
+docker compose logs -f                # watch the import / updates
+```
+or without compose: `docker build -t quickdblp .` and `docker run -d --init -p 8000:8000 -v quickdblp-data:/data quickdblp`.
+
+- **First start:** the volume is empty, so the server imports the current dump from dblp.org by itself (download 2.8 GB, parse, build: roughly ten minutes with a fast connection). The page shows the progress; searching says that the import is still running. The container's health check answers from the start.
+- **Afterwards:** the server asks dblp.org every `QUICKDBLP_INTERVAL_DAYS` (7) days and updates itself if there is a newer dump; the page has an update button (see [Self-updating server](#self-updating-server-data-directory)). A failed update leaves the old data in place.
+- **Resources:** the volume needs about 12 to 14 GB (dump, two databases, scratch), an update about 6 GB of RAM for the parser while the server keeps answering (`docker-compose.yml` sets `mem_limit: 16g`). Run one container per volume.
+- **Bind mounts:** a named volume (as above) is writable for the container's user automatically; for `-v /some/directory:/data` the directory must belong to uid 10001 (`chown 10001 /some/directory`).
+- **Take over an existing database** (instead of the first import): `docker run --rm -v quickdblp-data:/data -v "$PWD/snapshot:/snapshot:ro" quickdblp quickdblp adopt --data-dir /data --db /snapshot/dblp.duckdb`
+- **There is no login.** Publish port 8000 only in a network you trust, or put a reverse proxy with authentication in front.
+
+**Image registry and the private repository.** Building from a checkout needs no token, and neither does running the container (it only talks to dblp.org); no secret ever enters the image. To avoid building on every machine, the workflow `.github/workflows/docker-image.yml` builds the image on every `v*` tag (after a smoke test) and pushes it to the GitHub container registry as `ghcr.io/reinago/quickdblp` (tags: version, `latest`, commit). The package of a private repository is private too, so the server logs in once, with a token that may only read packages (a *classic* personal access token with the scope `read:packages`), kept in the host's Docker configuration:
+```
+echo "$TOKEN" | docker login ghcr.io -u <github user> --password-stdin
+docker compose pull && docker compose up -d
+```
+
 ## Description
 
 - `quickdblp/` the application

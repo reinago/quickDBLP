@@ -1,0 +1,25 @@
+# quickDBLP as a service:
+#
+#   docker compose up -d --build     # build from this checkout and start
+#   docker compose pull && docker compose up -d     # or: use the image published by the GitHub workflow
+#
+# On the first start the volume is empty: the server imports the current DBLP dump by itself (download, parse, build; the
+# page shows the progress). After that it checks dblp.org every QUICKDBLP_INTERVAL_DAYS days, and the page has an update
+# button. See Readme.md ("Docker").
+services:
+  quickdblp:
+    image: ghcr.io/reinago/quickdblp:latest
+    build: .
+    init: true                      # a proper PID 1: signals reach the server, and no zombie processes
+    restart: unless-stopped
+    ports:
+      - "8000:8000"                 # there is no login: only publish this in a network you trust
+    environment:
+      QUICKDBLP_INTERVAL_DAYS: "7"  # 0 = no automatic checks, only the update button
+    volumes:
+      - quickdblp-data:/data        # the dump, the databases, the state (about 12 GB)
+    stop_grace_period: 30s          # time to stop a running parser cleanly
+    mem_limit: 16g                  # an update needs about 6 GB for the parser while the server keeps answering
+
+volumes:
+  quickdblp-data:

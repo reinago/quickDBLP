@@ -1,0 +1,32 @@
+# What must not enter the build context: data (many GB), build trees of the host (they contain host paths and would
+# break the configure step inside the image), caches, and everything the image does not need.
+.git
+.github
+.venv
+.pytest_cache
+**/__pycache__
+**/*.pyc
+
+snapshot
+data
+audit
+**/*.csv
+**/*.duckdb
+**/*.duckdb.*
+**/*.rdf
+**/*.rdf.gz
+
+ponder_dblp/build
+ponder_dblp/install
+ponder_dblp/out
+ponder_dblp/.vs
+
+tests
+**/*.ipynb
+refresh_rdf_cache.py
+requirements.txt
+TODO.md
+Readme.md
+Dockerfile
+docker-compose.yml
+.dockerignore
