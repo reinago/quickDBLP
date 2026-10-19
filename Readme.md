@@ -21,23 +21,34 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-Either fetch the current parser binaries from [here](https://github.com/reinago/quickDBLP/releases) or compile the parser yourself (you need CMake and a 64-bit development environment, e.g. a Visual Studio Developer Command Prompt)
+Either fetch the current parser binaries from [here](https://github.com/reinago/quickDBLP/releases) (Windows: `ponder_dblp.exe` with its two DLLs; Linux: `ponder_dblp-linux-x64.tar.gz`, which needs glibc 2.39 or newer, e.g. Ubuntu 24.04) or compile the parser yourself. Windows and Linux have separate build and install trees (`ponder_dblp/build/<windows|linux>/...`, `ponder_dblp/install/<windows|linux>/...`), so one checkout can be built from Windows and from WSL/Linux without the two interfering.
+
+Windows (you need CMake, Ninja and a 64-bit Visual Studio development environment, e.g. a Developer Command Prompt):
 ```
 cd ponder_dblp
-cmake --preset=x64-release .
+cmake --preset=x64-release
 cmake --build --preset=x64-release --target install
 cd ..
 ```
+Linux / WSL (you need cmake, ninja, g++ 13 or newer, git, curl, zip, unzip, tar and pkg-config, e.g. `sudo apt install cmake ninja-build g++ git curl zip unzip tar pkg-config`; the dependencies are fetched by vcpkg. Under WSL make sure `pkg-config` is the Linux one: WSL appends the Windows `PATH`, which may contain a Windows `pkg-config` that vcpkg cannot run):
+```
+cd ponder_dblp
+cmake --preset=linux-x64-release
+cmake --build --preset=linux-x64-release --target install
+cd ..
+```
+The other presets are `x64-debug`, `x64-relwithdeb` and `linux-x64-debug`, `linux-x64-relwithdeb`.
+
 Get/refresh the DBLP dump
 ```
 python refresh_rdf_cache.py
 ```
 Parse it and move the snapshot into place
 ```
-ponder_dblp\install\x64-release\bin\ponder_dblp.exe
+ponder_dblp\install\windows\x64-release\bin\ponder_dblp.exe      # Linux: ponder_dblp/install/linux/x64-release/bin/ponder_dblp
 move *.csv snapshot
 ```
-Start the web page (builds `snapshot/dblp.duckdb` first if it is missing or outdated, about a minute) and open <http://127.0.0.1:8000>
+Start the web page and open <http://127.0.0.1:8000>. The server keeps its data in the directory `data/`: on the first start it adopts an existing `snapshot/dblp.duckdb` (instantly), or, if there is none, imports the current dump from dblp.org by itself (a few minutes, progress is shown in the page). From then on the page header has an update button, and the data is refreshed in the background (see [Self-updating server](#self-updating-server-data-directory)).
 ```
 uv run quickdblp serve
 ```
@@ -47,25 +58,43 @@ uv run quickdblp serve
 
 ```
 uv run quickdblp serve [--host 0.0.0.0] [--port 8000] [--threads N] [--memory-limit 4GB]
-                       [--max-concurrent 8] [--timeout 30] [--snapshot-dir snapshot] [--db snapshot/dblp.duckdb]
+                       [--max-concurrent 8] [--timeout 30]
+                       [--data-dir data] [--interval-days 7] [--parser path/to/ponder_dblp]
+                       [--db snapshot/dblp.duckdb] [--snapshot-dir snapshot]    # fixed-database mode, see below
 ```
 
 - **Sharing:** `--host 0.0.0.0` makes it reachable for others on your network. There is **no authentication**, so only do this in a network you trust.
 - **One copy of the data:** the server is a single process with one read-only DuckDB database; requests share it. At most `--max-concurrent` queries run at the same time (others wait) and every query is cancelled after `--timeout` seconds. Requests are capped (50 authors, 200 reviewers, 5000 result rows, 2 MB of pasted HTML).
-- **Updating the snapshot:** stop the server, put new CSVs into `snapshot/`, start it again (it notices and rebuilds). To rebuild without starting the server, or to force it: `uv run quickdblp build-snapshot [--force]`. On Windows the database file cannot be replaced while a server is using it.
+- **Fixed-database mode:** giving `--db` and/or `--snapshot-dir` serves exactly that database, without the update button and without background updates. To update it by hand: stop the server, put new CSVs into `snapshot/`, start it again (it notices and rebuilds). To rebuild without starting the server, or to force it: `uv run quickdblp build-snapshot [--force]`. On Windows the database file cannot be replaced while a server is using it. (The self-updating mode below avoids all this.)
 - **Fuzzy / accent-insensitive search:** the *Matching* dropdown offers prefix, accent-insensitive prefix, fuzzy (Jaro-Winkler) and `LIKE` patterns.
 - **Keyboard:** Enter in the author, reviewer and page-source boxes presses their button; Shift+Enter inserts a line break.
+
+## Self-updating server (data directory)
+
+```
+uv run quickdblp serve [--data-dir data] [--interval-days 7] [--parser path/to/ponder_dblp]     # this is what plain `serve` does
+uv run quickdblp refresh --data-dir data [--force]     # update now, from the command line (e.g. for cron)
+uv run quickdblp adopt --data-dir data --db snapshot/dblp.duckdb [--move]   # start from an existing database
+```
+By default (without `--db`/`--snapshot-dir`) the server manages its data itself (environment: `QUICKDBLP_DATA_DIR`, `QUICKDBLP_INTERVAL_DAYS`, `QUICKDBLP_PARSER`):
+- **First start without data:** the server comes up at once and imports the current dump from dblp.org (download, parse, build; a few minutes). The page shows the progress; searching says that the import is still running. If there is already a `snapshot/dblp.duckdb`, it is adopted instead (hard link, no copy) and counts as just checked: starting the server never triggers an update by itself, the first automatic check comes one interval later. `quickdblp adopt` does the same by hand for another database.
+- **Update:** every `--interval-days` (7; `0` = never automatically, only by button) the server asks dblp.org (a HEAD request) whether the dump changed, and only then downloads it. Anybody can also press **Check for updates / Update now** in the page header. While an update runs, searching continues on the old data; then the new database replaces it without restart.
+- **Safe by construction:** only one update runs at a time, however many people click (they all see the same progress), and an OS file lock also covers a second process on the same directory (no stale lock files). The download is resumable and checked against dblp.org's MD5. The new database only replaces the old one if the parser finished without skipped records, the integrity checks pass, and it is not much smaller than the current one (90%). Otherwise the old data stays active, the error (with a log) is shown in the page, and the next try is allowed after 5 minutes (manual) or 30 minutes (automatic). The full `quickdblp audit` is not part of an update; run it by hand when you want the ground-truth check.
+- **Requirements:** the `ponder_dblp` binary (found in `ponder_dblp/build|install`, on the `PATH`, or via `--parser`), about 6 GB of RAM while parsing, and free disk space of about five times the dump (14 GB).
+- **Files in the data directory:** `current.json` (which database is active), `state.json`, `refresh.lock`, `downloads/` (the dump), `versions/<run>/dblp.duckdb` (the last two are kept), `logs/` (the last ten runs).
+- **API:** `GET /api/refresh` (status), `POST /api/refresh` (`{"force": false}`; answers `started`, `already_running`, `up_to_date`, `recent_failure` or `check_failed`).
 
 ## Description
 
 - `quickdblp/` the application
   - `db.py` builds the persisted DuckDB database from the snapshot CSVs (with a fingerprint to detect outdated databases) and runs the author/co-author/reviewer queries
   - `app.py` FastAPI app (JSON API under `/api/`, interactive docs at `/docs`) serving the static page
+  - `refresh.py` the background update (check, download, parse, build, validate, switch)
   - `guess.py` extracts author lists from PCS / EasyChair page sources
   - `static/` the web page (plain HTML/CSS/JS, no libraries, no build step)
   - `cli.py` the `quickdblp` command
 - `refresh_rdf_cache.py` cache fetcher in python: checks whether `dblp.rdf.gz` exists locally and is not more than 14 days older than the online version. If not, the current file is downloaded. File is put in `./`.
-- `ponder_dblp/` contains a multi-threaded C++ parser that turns the RDF dump into the CSV files below. You need CMake or a modern Visual Studio (with CMake support) to build it. It reads `dblp.rdf.gz` from the current directory (or the file given as first argument, `ponder_dblp path\to\dump.rdf.gz`) and writes the CSV files into the current directory. On a 16-core machine it needs about a minute for the full dump and about 5.5 GB of RAM. It is deterministic: two runs give identical files except for the numeric IDs. Malformed records are counted instead of aborting the run (`records_failed` in `dblp_metadata.json`, exit code 2). Each author is stored with one name variant, the lexicographically smallest of the ones used on their papers, and an ORCID if any signature has one.
+- `ponder_dblp/` contains a multi-threaded C++ parser that turns the RDF dump into the CSV files below. You need CMake or a modern Visual Studio (with CMake support) to build it. It reads `dblp.rdf.gz` from the current directory (or the file given as first argument, `ponder_dblp path\to\dump.rdf.gz`) and writes the CSV files into the current directory. On a 16-core machine it needs about a minute for the full dump on Windows and under half a minute on Linux, and about 5.5 GB of RAM. It is deterministic: two runs give identical files except for the numeric IDs. Malformed records are counted instead of aborting the run (`records_failed` in `dblp_metadata.json`, exit code 2). Each author is stored with one name variant, the lexicographically smallest of the ones used on their papers, and an ORCID if any signature has one.
 - `query_dblp.ipynb` / `query_dblp.py` the previous Jupyter notebook version (kept for now). It reads the csv files from the `./snapshot/` folder; select the venv created above as the kernel.
 
 ## Local files

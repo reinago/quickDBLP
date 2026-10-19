@@ -59,6 +59,8 @@ Full dump (739M lines, 43.7 GB uncompressed) on 16 cores: **410 s -> 52 s**, CPU
 - Profile of the old version: 8.6 s counting the uncompressed size (only for a progress bar), 266 s reading/parsing, 135 s writing CSV + exit; ~140 us CPU per record, one heap allocation per input line, 4 copies of every record, log messages built for every paper/author although logging was off, one global lock per paper/author/link, 32 threads on 16 cores, unbuffered CSV writing, destructors of 13M strings at exit.
 - Done: block reader with `memchr` line splitting and a bounded queue (records moved, not copied); in-place XML parse; sharded ID tables with `string_view` lookup; lock-free chunked storage; links stored per paper; pre-sized tables; one worker per core; 8 MB write buffers, three CSVs written in parallel; `quick_exit` after everything is closed; progress from the compressed offset (no counting pass); `ponder_dblp [file]`.
 - New behaviour: deterministic author name/ORCID (see above); malformed records are counted (`records_failed`, exit code 2) instead of crashing the run; the loader reports them as `parser_records_failed`.
+- Linux (WSL2, 2026-10-19): the first Linux build was 5x slower than Windows (8 s vs 1.6 s on a 30M-line slice, 8.4 s of it system time): waking a worker thread for every single record is a system call and often an inter-processor interrupt, which is expensive in a VM. Records are now handed to the workers in batches of 64 (bounded queue of 8 batches per worker): slice 7.9 s -> 1.1 s on Linux, Windows 1.7 -> 1.5 s; the full dump takes **24 s on Linux** (52 s on Windows); output identical in content across OS and before/after (slice and full-dump counts).
+- Build trees are per OS: `ponder_dblp/build|install/<windows|linux>/x64-release`, presets `x64-*` (Windows) and `linux-x64-*`; verified by building both from the same checkout.
 - Not done: CSV writing still takes ~16 s (probably disk bound); the reader is one thread (decompression 5 GB/s is not the limit, but line handling is); the XML DOM per record could be replaced by direct field extraction (now ~36 s of the run).
 - [ ] regenerate the real snapshot with the fixed parser, rebuild the database, run `quickdblp audit` until it is all PASS (a trial of the whole chain runs in `audit/new/`)
 - [ ] optional: spot-check a few authors against the live dblp.org per-person XML (network)
@@ -112,3 +114,20 @@ Make the three steps explicit in the layout (numbered sections, state kept clien
 
 ## Open questions (remaining)
 - none
+
+## Auto-refresh (done, 2026-10-19) and Docker (still to do)
+Decisions: anyone may start an update from the page (safeguards: one job at a time, no-op if dblp.org has nothing newer, wait after a failure); cheap checks only before switching (parser clean, integrity, size sanity; the full `audit` stays manual); weekly check, update only if the dump is newer; image built by GitHub Actions and pushed to a private ghcr.io (the server pulls with a read:packages token on the host; nothing secret inside the image).
+
+Done (95 tests incl. browser tests pass):
+- [x] `quickdblp/refresh.py`: RefreshManager (single job, OS file lock, HEAD check, resumable download with ETag/Range + MD5, parser run with progress, validation, versioned databases + `current.json` pointer, hot swap, pruning, weekly scheduler, initial import when there is no data, `adopt`)
+- [x] CLI: `serve --data-dir` (env QUICKDBLP_DATA_DIR / _INTERVAL_DAYS / _PARSER), `refresh`, `adopt`; API `/api/refresh` GET/POST; 503 on data endpoints until the first import is done; the old `--db/--snapshot-dir` mode still works (no updates)
+- [x] page: update status line, button, progress bar (download 2-40%, parse 40-75%, build 75-92%, ...), details log
+- [x] tests: `tests/test_refresh.py` (fake dblp.org server with ETag/Range/MD5/interruptions, stub parser), browser test of the panel in `tests/test_ui.py`
+- [x] Readme section "Self-updating server"
+- [x] real run against dblp.org (scratch data dir `audit/data-test`): 2.76 GB download ~4 min, parse 52 s, build+validate ~1 min -> 8,757,662 papers, 4,220,031 authors (dump of 2026-10-19); the server started from that directory, reported "up to date", a repeated update request did nothing. The run found one bug the tests had missed (relative data dir: the parser got a relative dump path; fixed + regression test).
+
+Later changes (2026-10-19): plain `quickdblp serve` is now the self-updating mode (data dir `data/`, adopts `snapshot/dblp.duckdb` by hard link on the first start without starting an update; `--db`/`--snapshot-dir` select the old fixed mode; `--interval-days 0` = no automatic checks). The release workflow builds Windows and Linux (ubuntu-24.04, GCC 13) binaries, smoke-tests both on `mini.rdf.gz` and creates one release from both; the Linux binary links libstdc++/libgcc statically (needs only glibc). Not run on GitHub yet (only the YAML syntax was checked locally).
+
+Still to do (Docker, nothing tested because Docker is not installed on the dev machine; the image needs GCC >= 13 to build the parser, the Linux build itself is verified in WSL/Ubuntu 24.04):
+- [ ] Dockerfile (multi-stage: build ponder_dblp with cmake/vcpkg on Linux - not yet compiled on Linux, may need small portability fixes - then python/uv image), `.dockerignore` (exclude snapshot/, audit/, data/, dblp.rdf.gz, .venv, build dirs), docker-compose.yml (volume /data, memory limit >= 12-16 GB, healthcheck on /api/meta), Readme section
+- [ ] GitHub Actions workflow: build and push to ghcr.io (private); `docker login ghcr.io` with a read:packages token on the server
