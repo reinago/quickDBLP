@@ -185,3 +185,6 @@ ponder_dblp/install/
 audit/
 
 snapshot/
+
+# data directory of the self-updating server
+data/

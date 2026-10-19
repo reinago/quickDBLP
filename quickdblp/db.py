@@ -7,7 +7,7 @@ import logging
 import os
 import re
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import duckdb
@@ -309,7 +309,9 @@ class Database:
         snapshot_time = metadata.get("source_file_last_write_time")
         age_days = None
         if snapshot_time:
-            age_days = (datetime.now() - datetime.fromisoformat(snapshot_time[:26])).days
+            # the parser writes the (UTC) modification time of the dump
+            snapshot = datetime.fromisoformat(snapshot_time[:26]).replace(tzinfo=timezone.utc)
+            age_days = (datetime.now(timezone.utc) - snapshot).days
         return {
             "snapshot_time": snapshot_time,
             "age_days": age_days,
