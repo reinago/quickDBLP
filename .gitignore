@@ -176,6 +176,8 @@ cython_debug/
 ponder_dblp/.vs/
 *.csv
 *.rdf*
+# the small sample is needed by the tests and the smoke tests of the release workflows
+!mini.rdf.gz
 
 ponder_dblp/install/
 
