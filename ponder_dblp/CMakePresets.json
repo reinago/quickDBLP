@@ -6,8 +6,6 @@
       "description": "Target Windows with the Visual Studio development environment.",
       "hidden": true,
       "generator": "Ninja",
-      "binaryDir": "${sourceDir}/build/${presetName}",
-      "installDir": "${sourceDir}/install/${presetName}",
       "cacheVariables": {
         "CMAKE_C_COMPILER": "cl.exe",
         "CMAKE_CXX_COMPILER": "cl.exe"
@@ -19,6 +17,17 @@
       }
     },
     {
+      "name": "linux-base",
+      "description": "Target Linux (also WSL) with the system compiler.",
+      "hidden": true,
+      "generator": "Ninja",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      }
+    },
+    {
       "name": "x64-debug",
       "displayName": "x64 Debug",
       "description": "Target Windows (64-bit) with the Visual Studio development environment. (Debug)",
@@ -27,20 +36,61 @@
         "value": "x64",
         "strategy": "external"
       },
+      "binaryDir": "${sourceDir}/build/windows/x64-debug",
+      "installDir": "${sourceDir}/install/windows/x64-debug",
       "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
     },
     {
       "name": "x64-relwithdeb",
       "displayName": "x64 RelWithDebInfo",
       "description": "Target Windows (64-bit) with the Visual Studio development environment. (RelWithDebInfo)",
-      "inherits": "x64-debug",
+      "inherits": "windows-base",
+      "architecture": {
+        "value": "x64",
+        "strategy": "external"
+      },
+      "binaryDir": "${sourceDir}/build/windows/x64-relwithdeb",
+      "installDir": "${sourceDir}/install/windows/x64-relwithdeb",
       "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo" }
     },
     {
       "name": "x64-release",
       "displayName": "x64 Release",
       "description": "Target Windows (64-bit) with the Visual Studio development environment. (Release)",
-      "inherits": "x64-debug",
+      "inherits": "windows-base",
+      "architecture": {
+        "value": "x64",
+        "strategy": "external"
+      },
+      "binaryDir": "${sourceDir}/build/windows/x64-release",
+      "installDir": "${sourceDir}/install/windows/x64-release",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+    },
+    {
+      "name": "linux-x64-debug",
+      "displayName": "Linux x64 Debug",
+      "description": "Target Linux (64-bit, also WSL). (Debug)",
+      "inherits": "linux-base",
+      "binaryDir": "${sourceDir}/build/linux/x64-debug",
+      "installDir": "${sourceDir}/install/linux/x64-debug",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+    },
+    {
+      "name": "linux-x64-relwithdeb",
+      "displayName": "Linux x64 RelWithDebInfo",
+      "description": "Target Linux (64-bit, also WSL). (RelWithDebInfo)",
+      "inherits": "linux-base",
+      "binaryDir": "${sourceDir}/build/linux/x64-relwithdeb",
+      "installDir": "${sourceDir}/install/linux/x64-relwithdeb",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo" }
+    },
+    {
+      "name": "linux-x64-release",
+      "displayName": "Linux x64 Release",
+      "description": "Target Linux (64-bit, also WSL). (Release)",
+      "inherits": "linux-base",
+      "binaryDir": "${sourceDir}/build/linux/x64-release",
+      "installDir": "${sourceDir}/install/linux/x64-release",
       "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
     }
   ],
@@ -56,6 +106,18 @@
     {
       "name": "x64-release",
       "configurePreset": "x64-release"
+    },
+    {
+      "name": "linux-x64-debug",
+      "configurePreset": "linux-x64-debug"
+    },
+    {
+      "name": "linux-x64-relwithdeb",
+      "configurePreset": "linux-x64-relwithdeb"
+    },
+    {
+      "name": "linux-x64-release",
+      "configurePreset": "linux-x64-release"
     }
   ]
 }

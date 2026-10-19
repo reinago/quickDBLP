@@ -448,6 +448,26 @@ void readDump(const std::string& inputFilePath, ThreadPool& threadPool) {
 	record.reserve(1 << 14);
 	ParserState::Value state = ParserState::Searching;
 
+	// Records go to the workers in batches: waking a worker thread for every single record costs more than parsing
+	// it, especially on Linux and in virtual machines (WSL), where every wake-up is a system call and often an
+	// inter-processor interrupt.
+	struct Record {
+		std::string text;
+		ParserState::Value type;
+	};
+	constexpr size_t kBatchRecords = 64;
+	std::vector<Record> batch;
+	batch.reserve(kBatchRecords);
+	auto flushBatch = [&]() {
+		if (batch.empty()) return;
+		auto work = std::make_shared<std::vector<Record>>(std::move(batch));
+		batch = std::vector<Record>();
+		batch.reserve(kBatchRecords);
+		threadPool.enqueue([work]() {
+			for (Record& r : *work) processRecordSafely(r.text, r.type);
+		});
+	};
+
 	auto handleLine = [&](std::string_view line) {
 		if (state == ParserState::Searching) {
 			state = ParserState::startedEntity(line);
@@ -461,9 +481,8 @@ void readDump(const std::string& inputFilePath, ThreadPool& threadPool) {
 		record.append(line);
 		record.push_back('\n');
 		if (ParserState::endsEntity(line, state)) {
-			auto task = std::make_shared<std::string>(std::move(record));
-			const ParserState::Value type = state;
-			threadPool.enqueue([task, type]() { processRecordSafely(*task, type); });
+			batch.push_back({ std::move(record), state });
+			if (batch.size() >= kBatchRecords) flushBatch();
 			record = std::string();
 			record.reserve(1 << 14);
 			state = ParserState::Searching;
@@ -500,6 +519,7 @@ void readDump(const std::string& inputFilePath, ThreadPool& threadPool) {
 		throw std::runtime_error(std::string("Error while reading ") + inputFilePath + ": " + (message ? message : "unknown"));
 	}
 	if (!carry.empty()) handleLine(carry);  // last line without line break
+	flushBatch();
 	zng_gzclose(file);
 }
 
@@ -547,7 +567,7 @@ int main(int argc, char** argv) {
 			// One thread reads and cuts up the dump; the other cores parse. More threads than cores only add
 			// lock contention.
 			const size_t workers = std::max(2u, std::thread::hardware_concurrency());
-			ThreadPool threadPool(workers);
+			ThreadPool threadPool(workers, 8 * workers);  // each queued task is a batch of records
 			readDump(inputFilePath, threadPool);
 			std::cout << std::endl << "Waiting for threads to finish parsing... ";
 			threadPool.waitForAll();

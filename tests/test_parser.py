@@ -28,10 +28,11 @@ def find_parser():
     candidates = []
     if os.environ.get("QUICKDBLP_PONDER_EXE"):
         candidates.append(Path(os.environ["QUICKDBLP_PONDER_EXE"]))
+    system = "windows" if os.name == "nt" else "linux"
+    exe = "ponder_dblp.exe" if os.name == "nt" else "ponder_dblp"
     for sub in ("build", "install"):
         for preset in ("x64-release", "x64-relwithdeb"):
-            for exe in ("ponder_dblp.exe", "ponder_dblp"):
-                candidates.append(ROOT / "ponder_dblp" / sub / preset / ("bin" if sub == "install" else "") / exe)
+            candidates.append(ROOT / "ponder_dblp" / sub / system / preset / ("bin" if sub == "install" else "") / exe)
     fresh = [c for c in candidates if c.is_file() and c.stat().st_mtime >= SOURCE.stat().st_mtime]
     return fresh[0] if fresh else None
 

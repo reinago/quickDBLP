@@ -44,6 +44,11 @@ add_executable(ponder_dblp "${CMAKE_CURRENT_SOURCE_DIR}/ponder_dblp.cpp")
 
 target_include_directories(ponder_dblp PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(ponder_dblp PRIVATE zlib-ng::zlib pugixml::pugixml)
+if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+  # A binary built with a recent GCC must also start where an older libstdc++ is installed (release binaries, slim
+  # container images): link the C++ runtime in, so that only glibc is needed.
+  target_link_options(ponder_dblp PRIVATE -static-libstdc++ -static-libgcc)
+endif ()
 install(TARGETS ponder_dblp DESTINATION bin)
 
 if (WIN32)
