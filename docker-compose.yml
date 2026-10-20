@@ -1,7 +1,8 @@
 # quickDBLP as a service:
 #
 #   docker compose up -d --build     # build from this checkout and start
-#   docker compose pull && docker compose up -d     # or: use the image published by the GitHub workflow
+#   docker compose pull && docker compose up -d --no-build     # or: use the image published by the GitHub workflow
+#                                   (on the server; only this file is needed there, after `docker login ghcr.io`)
 #
 # On the first start the volume is empty: the server imports the current DBLP dump by itself (download, parse, build; the
 # page shows the progress). After that it checks dblp.org every QUICKDBLP_INTERVAL_DAYS days, and the page has an update

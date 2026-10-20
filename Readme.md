@@ -104,8 +104,9 @@ or without compose: `docker build -t quickdblp .` and `docker run -d --init -p 8
 **Image registry and the private repository.** Building from a checkout needs no token, and neither does running the container (it only talks to dblp.org); no secret ever enters the image. To avoid building on every machine, the workflow `.github/workflows/docker-image.yml` builds the image on every `v*` tag (after a smoke test) and pushes it to the GitHub container registry as `ghcr.io/reinago/quickdblp` (tags: version, `latest`, commit). The package of a private repository is private too, so the server logs in once, with a token that may only read packages (a *classic* personal access token with the scope `read:packages`), kept in the host's Docker configuration:
 ```
 echo "$TOKEN" | docker login ghcr.io -u <github user> --password-stdin
-docker compose pull && docker compose up -d
+docker compose pull && docker compose up -d --no-build
 ```
+Run these on the machine that is going to run the container (the server), in a directory that contains `docker-compose.yml`: a copy of that one file is enough, the repository itself is not needed there (`--no-build` makes sure that compose does not try to build from a missing checkout). Log in first, on that same machine; the login is stored in that machine's Docker configuration. To create the token: GitHub, Settings, Developer settings, Personal access tokens (classic), scope `read:packages`; the account must be allowed to see this repository. To update later, run the same two commands again; the data stays in the volume.
 
 ## Description
 
