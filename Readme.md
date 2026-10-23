@@ -119,7 +119,6 @@ Run these on the machine that is going to run the container (the server), in a d
   - `cli.py` the `quickdblp` command
 - `refresh_rdf_cache.py` cache fetcher in python: checks whether `dblp.rdf.gz` exists locally and is not more than 14 days older than the online version. If not, the current file is downloaded. File is put in `./`.
 - `ponder_dblp/` contains a multi-threaded C++ parser that turns the RDF dump into the CSV files below. You need CMake or a modern Visual Studio (with CMake support) to build it. It reads `dblp.rdf.gz` from the current directory (or the file given as first argument, `ponder_dblp path\to\dump.rdf.gz`) and writes the CSV files into the current directory. On a 16-core machine it needs about a minute for the full dump on Windows and under half a minute on Linux, and about 5.5 GB of RAM. It is deterministic: two runs give identical files except for the numeric IDs. Malformed records are counted instead of aborting the run (`records_failed` in `dblp_metadata.json`, exit code 2). Each author is stored with one name variant, the lexicographically smallest of the ones used on their papers, and an ORCID if any signature has one.
-- `query_dblp.ipynb` / `query_dblp.py` the previous Jupyter notebook version (kept for now). It reads the csv files from the `./snapshot/` folder; select the venv created above as the kernel.
 
 ## Local files
 - `dblp.rdf.gz` the database fetched from DBLP
@@ -160,5 +159,5 @@ They use an installed Edge or Chrome; otherwise run `uv run playwright install c
 - [x] check for multiple authors at once (semicolon separated)
 - [x] paste pieces of PCS or other conference software and try to guess author lists from those
 - [x] web page with a python backend
-- [ ] remove the notebook once the web page has proven itself
+- [x] remove the notebook
 - see `TODO.md` for the rest

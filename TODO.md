@@ -1,6 +1,6 @@
 # quickDBLP web rewrite – TODO
 
-Goal: replace `query_dblp.ipynb` + `query_dblp.py` (ipywidgets/itables) with a Python backend and a web page for
+Goal: replace the former `query_dblp.ipynb` + `query_dblp.py` (ipywidgets/itables, now removed) with a Python backend and a web page for
 searching co-authors (conflict-of-interest checks) with readable, filterable output.
 
 ## Current functionality to preserve (from `query_dblp.py`)
@@ -92,7 +92,7 @@ Full dump (739M lines, 43.7 GB uncompressed) on 16 cores: **410 s -> 52 s**, CPU
 - [-] M5 Output: export dropped for now (not wanted)
 - [x] UI e2e tests in `tests/test_ui.py` (Playwright, optional `ui` dependency group; skipped when Playwright/browser missing)
 - [x] Malformed CSV records (found with the 2026-10-15 snapshot): `ponder_dblp` wrote raw tabs/line breaks from arXiv titles into the TSV. Fixed in the parser (`sanitizeField`, takes effect after rebuilding `ponder_dblp`) and tolerated by the loader (`repair_tsv`, 4 records repaired in the current snapshot); failed rename because a server holds the DB now gives a clear error and no leftover `.tmp`.
-- [x] M6 Docs: `Readme.md` updated. Notebook (`query_dblp.ipynb`, `query_dblp.py`) and Jupyter deps are **kept for now** at the user's request; remove later.
+- [x] M6 Docs: `Readme.md` updated. Notebook (`query_dblp.ipynb`, `query_dblp.py`) and the Jupyter/itables/pandas deps were removed afterwards (`dependencies` now lists only what the server uses).
 - [ ] Later: incremental snapshot updates (existing open item)
 
 ## More decisions (from Q&A)
@@ -132,4 +132,4 @@ Docker (written 2026-10-19; there is no Docker on the dev machine, but the image
 - [ ] run the image on a machine with Docker (CI only proved that it builds and starts): first start = full import from dblp.org (~10 min), the health check turning healthy, a restart keeping the data in the volume, an update from the page, `docker stop` while a parser runs
 - [x] first run of the image workflow on GitHub: passed (builds, smoke tests, pushes to ghcr.io)
 - [ ] on the server: `docker login ghcr.io` with a read:packages token, then `docker compose pull && docker compose up -d`
-- [ ] optional: the notebook dependencies (ipykernel, itables, pandas, ...) are in `dependencies`, so the image carries them (~200 MB); move them into a dependency group once the notebook is removed
+- [x] the notebook dependencies are gone from `dependencies`, so the image no longer carries them
