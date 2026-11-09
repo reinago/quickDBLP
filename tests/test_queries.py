@@ -1,4 +1,8 @@
+import duckdb
 import pytest
+
+from conftest import write_snapshot
+from quickdblp.db import Database, build_snapshot
 
 
 def names(result):
@@ -33,7 +37,7 @@ def test_dblp_url(db):
 
 def test_like(db):
     assert names(db.search_authors("%Cruz", matcher="like")) == ["Carol Cruz"]
-    assert db.search_authors("Cruz", matcher="prefix")["authors"] == []
+    assert db.search_authors("Cruz", matcher="like")["authors"] == []  # a pattern means the whole name
 
 
 def test_accent_insensitive(db):
@@ -105,3 +109,93 @@ def test_no_authors(db):
 
 def test_recent_papers(db):
     assert [p["id"] for p in db.recent_papers(1, limit=2)] == [1, 6]
+
+
+# ----------------------------------------------------------------------------------------------- names by their words
+
+NAMES = [
+    (10, "https://dblp.org/pid/10", "Guido Reina", ""),
+    (11, "https://dblp.org/pid/11", "Hans-Peter Seidel", ""),
+    (12, "https://dblp.org/pid/12", "Wei Wang 0001", ""),
+    (13, "https://dblp.org/pid/13", "Wei Wang 0002", ""),
+    (14, "https://dblp.org/pid/14", "Zoë Lüdenscheid", ""),
+    (15, "https://dblp.org/pid/15", "Reinald Bauer", ""),
+    (16, "https://dblp.org/pid/16", "Percy_Underscore", ""),
+]
+
+
+@pytest.fixture
+def names_db(tmp_path):
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    write_snapshot(snapshot, extra_authors=NAMES)
+    path = tmp_path / "dblp.duckdb"
+    build_snapshot(snapshot, path)
+    database = Database(path)
+    yield database
+    database.close()
+
+
+@pytest.mark.parametrize("index", [True, False], ids=["name index", "without index"])
+def test_prefix_matches_the_start_of_any_word(names_db, index):
+    names_db._name_index = index  # an old database that could not be upgraded must give the same answers
+    find = lambda q, m="prefix": names(names_db.search_authors(q, matcher=m))  # noqa: E731
+    assert find("Reina") == ["Guido Reina", "Reinald Bauer"]       # last name only; any word, sorted by name
+    assert find("Reinal") == ["Reinald Bauer"]
+    assert find("Guido Rei") == ["Guido Reina"]                    # every query word must match ...
+    assert find("Reina Guido") == ["Guido Reina"]                  # ... in any order
+    assert find("Guido Bauer") == []
+    assert find("Peter") == ["Hans-Peter Seidel"]                  # hyphens separate words
+    assert find("Hans-Peter Sei") == ["Hans-Peter Seidel"]
+    assert find("Wang") == ["Wei Wang 0001", "Wei Wang 0002"]
+    assert find("Wang 0002") == ["Wei Wang 0002"]                  # the homonym number still narrows it down
+    assert find("eina") == []                                     # the start of a word, not any part
+    assert find("Ludenscheid") == []                              # plain prefix keeps the accents ...
+    assert find("Lüdenscheid") == ["Zoë Lüdenscheid"]
+    assert find("Ludenscheid", "accent") == ["Zoë Lüdenscheid"]   # ... the accent-insensitive one does not
+    assert find("zoe lud", "accent") == ["Zoë Lüdenscheid"]
+    assert find("%") == [] and find("_") == []                    # LIKE wildcards are plain characters here
+    assert find("Percy_") == ["Percy_Underscore"]
+    assert find("Brandt, Bob") == ["Bob Brandt"]
+
+
+@pytest.mark.parametrize("index", [True, False], ids=["name index", "without index"])
+def test_fuzzy_compares_word_by_word(names_db, index):
+    names_db._name_index = index
+    find = lambda q: names(names_db.search_authors(q, matcher="fuzzy"))  # noqa: E731
+    assert find("Riena") == ["Guido Reina"]                       # a misspelt last name alone
+    assert find("Guido Riena")[0] == "Guido Reina"
+    assert find("Seidl") == ["Hans-Peter Seidel"]
+    assert find("Luedenscheid") == ["Zoë Lüdenscheid"]
+    assert set(find("Wang")) == {"Wei Wang 0001", "Wei Wang 0002"}
+    assert find("Alise Anders")[:2] == ["Alice Anders", "Alice Anders"]
+    assert find("Guido Bauer") == []                              # each word matches someone, but no one both
+
+
+@pytest.mark.parametrize("matcher", ["prefix", "accent", "fuzzy"])
+def test_the_name_index_changes_nothing_but_the_speed(names_db, matcher):
+    """Same candidates, order, paper counts and latest years with and without the index."""
+    for query in ("Alice", "Wang", "Reina", "Guido Reina", "Bob Brandt", "Zoe", "Anders Alice", "Wang 0001"):
+        names_db._name_index = True
+        indexed = names_db.search_authors(query, matcher=matcher)
+        names_db._name_index = False
+        assert names_db.search_authors(query, matcher=matcher) == indexed, query
+
+
+def test_an_old_database_gets_the_name_index_when_opened(snapshot_dir, tmp_path):
+    path = tmp_path / "dblp.duckdb"
+    build_snapshot(snapshot_dir, path)
+    con = duckdb.connect(str(path))  # as built before the name index existed
+    for table in ("name_words", "name_word_list", "author_stats"):
+        con.execute(f"drop table {table}")
+    con.execute("delete from meta where key = 'name_index'")
+    con.close()
+    database = Database(path)
+    try:
+        assert database._name_index
+        assert names(database.search_authors("Cruz")) == ["Carol Cruz"]
+    finally:
+        database.close()
+    database = Database(path)
+    assert database._name_index  # and it stays there
+    database.close()

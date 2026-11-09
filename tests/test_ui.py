@@ -101,7 +101,7 @@ def test_search_select_and_layout(page):
     page.check("#cand-1")
     expect(page.locator("#selected-summary")).to_contain_text("Bob Brandt")
     expect(page.locator(ROWS).first).to_be_visible()
-    expect(page.locator("#tab-conflicts")).to_contain_text(re.compile(r"Conflicts \(\d+\)"))
+    expect(page.locator("#tab-conflicts")).to_have_text(re.compile(r"^\s*2\s+Conflicts \(\d+\)$"))  # nothing after the count
 
     left, right = page.locator("#step-authors").bounding_box(), page.locator("#right-pane").bounding_box()
     assert right["x"] >= left["x"] + left["width"] - 1, "results are to the right of the authors"
@@ -170,7 +170,7 @@ def test_reviewer_check_with_tabs(page):
     expect(rows).to_have_count(4)
     for row, text in zip(range(4), ["Conflict", "No conflict found", "Several profiles match", "Not found in DBLP"]):
         expect(rows.nth(row)).to_contain_text(text)
-    expect(page.locator("#tab-reviewers")).to_contain_text("in conflict")
+    expect(page.locator("#tab-reviewers")).to_have_text(re.compile(r"^\s*3\s+Check reviewers \(\d+ of \d+ in conflict\)$"))
 
     # the "shared papers" line expands to the papers
     rows.nth(0).locator("summary").click()
@@ -185,6 +185,64 @@ def test_reviewer_check_with_tabs(page):
     page.uncheck("#type-boxes input[value='1']")
     page.uncheck("#type-boxes input[value='3']")
     expect(page.locator("#reviewer-summary")).to_contain_text("0 conflict")
+
+
+def test_results_clear_at_once_and_show_busy_indicators(page):
+    """On a slow server: results of the previous query never stay on screen, a busy note stands in until the answer."""
+    select_alice_and_bob(page)
+    held = []  # answers are held back until the test releases them
+
+    def release(count=1):
+        for _ in range(100):
+            if len(held) >= count:
+                break
+            page.wait_for_timeout(20)
+        assert len(held) >= count, "the request was not sent"
+        while held:
+            held.pop(0).continue_()
+
+    page.route(re.compile(r"/api/(conflicts|reviewers/check|authors/search)"), lambda route: held.append(route))
+
+    # a filter changes: the table is gone at once, the note and the tab spinner show until the answer is in
+    page.uncheck("#type-boxes input[value='3']")
+    expect(page.locator(ROWS)).to_have_count(0)
+    expect(page.locator("#conflict-status")).to_contain_text("Computing the conflicts")
+    expect(page.locator("#tab-conflicts .spinner")).to_have_count(1)
+    release()
+    expect(page.locator(ROWS).first).to_be_visible()
+    expect(page.locator("#conflict-status")).to_be_empty()
+    expect(page.locator("#tab-conflicts .spinner")).to_have_count(0)
+
+    # the reviewer check: the button spins while it runs
+    page.click("#tab-reviewers")
+    page.fill("#reviewer-input", "Carol Cruz")
+    page.click("#reviewer-check")
+    expect(page.locator("#reviewer-check")).to_have_class(re.compile("working"))
+    expect(page.locator("#reviewer-results")).to_contain_text("Checking the reviewers")
+    release()
+    expect(page.locator("#reviewer-summary")).to_contain_text("1 conflict")
+    expect(page.locator("#reviewer-check")).not_to_have_class(re.compile("working"))
+
+    # a filter change clears the reviewer results too, while the conflicts and then the check run again
+    page.check("#type-boxes input[value='3']")
+    expect(page.locator("#reviewer-results tbody tr")).to_have_count(0)
+    expect(page.locator("#reviewer-summary")).to_have_text("")
+    expect(page.locator("#tab-reviewers .spinner")).to_have_count(1)
+    release()  # conflicts
+    release()  # reviewers
+    expect(page.locator("#reviewer-summary")).to_contain_text("1 conflict")
+    expect(page.locator("#tab-reviewers .spinner")).to_have_count(0)
+
+    # a new author search drops the old candidates and the selection (and with it the results on the right) at once
+    page.fill("#author-input", "Bob Brandt")
+    page.click("#author-search")
+    expect(page.locator(".group")).to_have_count(0)
+    expect(page.locator("#author-results")).to_contain_text("Searching DBLP")
+    expect(page.locator("#tabs")).to_be_hidden()
+    release()
+    expect(page.locator(".group")).to_have_count(1)
+    release()  # the unique match is preselected: its conflicts
+    expect(page.locator("#tab-conflicts")).to_have_text(re.compile(r"^\s*2\s+Conflicts \(\d+\)$"))  # nothing after the count
 
 
 # ----------------------------------------------------------------------------------------------- data updates

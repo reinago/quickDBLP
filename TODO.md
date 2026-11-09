@@ -133,3 +133,9 @@ Docker (written 2026-10-19; there is no Docker on the dev machine, but the image
 - [x] first run of the image workflow on GitHub: passed (builds, smoke tests, pushes to ghcr.io)
 - [ ] on the server: `docker login ghcr.io` with a read:packages token, then `docker compose pull && docker compose up -d`
 - [x] the notebook dependencies are gone from `dependencies`, so the image no longer carries them
+
+## Memory (later, discussed 2026-10-22)
+Serving needs ~1-2.5 GB (read-only DuckDB, 1.7 GB file); the 16 GB `mem_limit` is for updates: the parser holds the whole dump in memory (~5.5-6 GB), and the DuckDB build in `build_snapshot` runs without a memory limit. Measure first with `docker stats` (idle and during an update).
+- [ ] `QUICKDBLP_MEMORY_LIMIT` (and threads) as environment variables, applied to the serving connection and to the build connection (which then spills to `temp_directory`); then lower `mem_limit` to ~8 GB
+- [ ] optional: build updates on another machine and `adopt` the `.duckdb` (server then needs ~3 GB, but no automatic updates)
+- [ ] optional, large: streaming / two-pass parser to get below the ~6 GB peak

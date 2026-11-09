@@ -181,3 +181,17 @@ textarea { resize: vertical; }
 .filter-types { flex-wrap: nowrap; align-items: flex-start; }
 .filter-types .filter-label { padding-top: .3rem; white-space: nowrap; }
 #type-boxes { display: flex; flex-wrap: wrap; flex: 1; }
+
+/* busy indicators: a spinning ring in place of results that are being computed, in the tab labels and on busy buttons.
+   The note fades in after a moment, so that quick answers do not flicker. */
+.spinner { display: inline-block; width: .95em; height: .95em; border: 2px solid var(--border); border-top-color: var(--accent);
+  border-radius: 50%; vertical-align: -.12em; animation: spin .8s linear infinite; }
+.loading { display: flex; align-items: center; gap: .5rem; padding: .75rem 0; color: var(--muted); animation: appear .2s .15s both; }
+[role=tab] .spinner { width: .8em; height: .8em; }
+button.working::after { content: ""; display: inline-block; width: .8em; height: .8em; margin-left: .45em; vertical-align: -.1em;
+  border: 2px solid currentColor; border-top-color: transparent; border-radius: 50%; animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes appear { from { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .spinner, button.working::after { animation-duration: 2.5s; }
+}

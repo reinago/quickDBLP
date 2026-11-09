@@ -69,3 +69,16 @@ def test_the_data_directory_can_be_chosen(tmp_path, monkeypatch, snapshot_dir):
     with TestClient(app_from_args(serve_args("--data-dir", str(tmp_path / "elsewhere")))) as client:
         assert client.get("/api/refresh").json()["ready"]
     assert (tmp_path / "elsewhere" / "current.json").is_file() and not (tmp_path / "data").exists()
+
+
+def test_slow_down_delays_the_answers_about_the_data_only(tmp_path, monkeypatch, snapshot_dir):
+    monkeypatch.chdir(tmp_path)
+    db = make_snapshot_db(snapshot_dir)
+    with TestClient(app_from_args(serve_args("--db", str(db), "--slow-down", "0.5"))) as client:
+        start = time.monotonic()
+        assert client.get("/api/meta").status_code == 200  # the page asks this by itself: not delayed
+        assert client.get("/api/refresh").status_code == 200
+        assert time.monotonic() - start < 0.4
+        start = time.monotonic()
+        assert client.post("/api/authors/search", json={"queries": ["Bob"]}).status_code == 200
+        assert time.monotonic() - start >= 0.5

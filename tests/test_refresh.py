@@ -334,6 +334,27 @@ def test_the_parser_must_exist(tmp_path, server, activated):
     assert "parser" in wait(manager)["error"]
 
 
+def test_a_start_that_finds_the_parser_forgets_the_failure_for_lack_of_it(tmp_path, server, activated, monkeypatch):
+    without = make_manager(tmp_path, server, activated)
+    without.parser_command = None
+    without.request("initial")
+    wait(without)
+    assert without.request("manual")["reason"] == "recent_failure"  # that start can do nothing about it
+
+    restarted = make_manager(tmp_path, server, activated)  # e.g. now with --parser
+    assert restarted.status()["last_error"] is None
+    import_first(restarted)  # no waiting after the failure
+
+    # any other failure still makes the next attempt wait, also after a restart
+    server.new_version("v2")
+    monkeypatch.setenv("STUB_MODE", "crash")
+    restarted.request("manual")
+    wait(restarted)
+    again = make_manager(tmp_path, server, activated)
+    assert again.status()["last_error"] is not None
+    assert again.request("manual")["reason"] == "recent_failure"
+
+
 # ----------------------------------------------------------------------------------------------- the schedule
 
 def test_scheduler_decisions(tmp_path, server, activated):

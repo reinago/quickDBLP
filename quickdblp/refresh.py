@@ -54,6 +54,9 @@ class RefreshError(RuntimeError):
     pass
 
 
+NO_PARSER = "the parser (ponder_dblp) was not found; build it or set QUICKDBLP_PARSER"
+
+
 class ProcessLock:
     """Exclusive lock on a file. The operating system drops it when the process ends, however it ends, so
     unlike a lock *file* it can never be left behind."""
@@ -223,6 +226,13 @@ class RefreshManager:
         self._stop = threading.Event()
         self._scheduler: threading.Thread | None = None
         self._state = self._read_json(self.data_dir / "state.json") or {}
+        # The parser is looked up once, at the start: a failure for lack of it is fixed by this start if the parser
+        # is there now, so it neither blocks the next attempt nor stays on the page as the last error.
+        if self.parser_command and (self._state.get("last_error") or {}).get("message") == NO_PARSER:
+            self._state.pop("last_failure_at", None)
+            self._state.pop("last_error", None)
+            if self.data_dir.is_dir():
+                self._save_state()
 
     # ----------------------------------------------------------------- files
 
@@ -453,7 +463,7 @@ class RefreshManager:
 
     def _pipeline(self, job: RefreshJob) -> None:
         if not self.parser_command:
-            raise RefreshError("the parser (ponder_dblp) was not found; build it or set QUICKDBLP_PARSER")
+            raise RefreshError(NO_PARSER)
         job.set("check", 0, "asking dblp.org")
         remote = self.check_remote()
         current = self.current()

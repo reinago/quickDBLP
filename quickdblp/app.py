@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import threading
 from contextlib import asynccontextmanager
@@ -98,6 +99,7 @@ def create_app(
     warm_up: bool = True,
     data_dir: str | Path | None = None,
     refresh_options: dict | None = None,
+    slow_down: float = 0.0,
 ) -> FastAPI:
     """Two ways to run:
 
@@ -106,6 +108,8 @@ def create_app(
       refresh.py). `refresh_options` are passed to the RefreshManager.
     * `db_path` (and optionally `snapshot_dir`, from which the database is built when it is missing or
       outdated): a fixed database, no updates from the page.
+
+    `slow_down` (seconds) delays every answer about the data, to try the page as if the server were slow (testing only).
     """
     if data_dir is None and db_path is None:
         raise ValueError("either data_dir or db_path is required")
@@ -154,6 +158,16 @@ def create_app(
     @app.exception_handler(QueryTimeout)
     async def _timeout(request: Request, exc: QueryTimeout):
         return JSONResponse({"detail": "The query took too long; try a more specific search."}, status_code=504)
+
+    if slow_down > 0:
+        log.warning("answers about the data are delayed by %g s (--slow-down, for testing only)", slow_down)
+
+        @app.middleware("http")
+        async def _slow_down(request: Request, call_next):
+            # not the status endpoints (/api/meta, /api/refresh), which the page asks on its own
+            if request.url.path.startswith("/api/") and request.url.path not in ("/api/meta", "/api/refresh"):
+                await asyncio.sleep(slow_down)
+            return await call_next(request)
 
     # Plain `def` routes run in the threadpool, so slow queries never block the event loop.
 

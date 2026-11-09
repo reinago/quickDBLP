@@ -46,6 +46,14 @@ MATCHERS = ("prefix", "like", "accent", "fuzzy")
 # DuckDB's strip_accents leaves e.g. "ß" or "ø" alone; good enough for name matching.
 _NORM = "lower(strip_accents({}))"
 
+# Names are searched by their words: split at blanks and hyphens (the same rule in SQL and in Python).
+_WORD_SPLIT_SQL = r"'[\s-]+'"
+_WORD_SPLIT = re.compile(r"[\s-]+")
+FUZZY_THRESHOLD = 0.9
+
+# Version of the name word tables (see _add_name_index); databases with an older one get them rebuilt when opened.
+NAME_INDEX_VERSION = 2
+
 
 class SnapshotError(RuntimeError):
     pass
@@ -125,9 +133,10 @@ def build_snapshot(snapshot_dir: str | Path, db_path: str | Path, force: bool = 
         integrity["parser_records_failed"] = int(fp["metadata"].get("records_failed", 0))
         if integrity["parser_records_failed"]:
             log.warning("the parser skipped %d malformed records; the snapshot is incomplete", integrity["parser_records_failed"])
+        _add_name_index(con)
         con.execute("create index idx_pa_author on papers_authors(AuthorID)")
         con.execute("create index idx_pa_paper on papers_authors(PaperID)")
-        con.execute("create table meta(key varchar primary key, value varchar)")
+        con.execute("create table if not exists meta(key varchar primary key, value varchar)")  # _add_name_index made it
         con.execute(
             "insert into meta values ('fingerprint', ?), ('built_at', ?), ('integrity', ?)",
             [json.dumps(fp), datetime.now().isoformat(), json.dumps(integrity)],
@@ -243,6 +252,67 @@ def _verify_counts(con: duckdb.DuckDBPyConnection, metadata: dict) -> None:
             raise SnapshotError(f"{table}: {actual} rows loaded but metadata says {metadata[key]}; snapshot incomplete?")
 
 
+def _add_name_index(con: duckdb.DuckDBPyConnection) -> None:
+    """The tables that make name search fast, (re)built from `authors`.
+
+    name_words: one row per word of a normalised name (DBLP's homonym numbers such as "0001" left out), with what a
+    search result shows, sorted by word. DuckDB keeps the smallest and largest value of every block of rows, so a
+    prefix range (word >= 'rei' and word < 'rei\\U0010FFFF') only reads the one or two blocks that can hold it.
+    name_word_list: the distinct words with their length, for fuzzy search (Jaro-Winkler cannot use an index, but
+    a quarter of the rows and a length filter make the scan cheap).
+    author_stats: paper count and latest year per author, shown with every candidate (computing them per search
+    joins all links with all papers).
+    """
+    for table in ("name_words", "name_word_list", "author_stats"):
+        con.execute(f"drop table if exists {table}")
+    con.execute(f"""
+        create table name_words as
+        select word, NumericID as AuthorID, Name, NameNorm, DBLP, ORCID
+        from (select *, unnest(regexp_split_to_array(NameNorm, {_WORD_SPLIT_SQL})) as word from authors)
+        where word <> '' and not regexp_full_match(word, '[0-9]+')
+        order by word
+    """)
+    con.execute("create table name_word_list as select word, length(word) as len from name_words group by word order by word")
+    con.execute("""
+        create table author_stats as
+        select pa.AuthorID, count(*) as paper_count, max(p.Year) as latest_year
+        from papers_authors pa join papers p on p.NumericID = pa.PaperID
+        group by pa.AuthorID order by pa.AuthorID
+    """)
+    con.execute("create table if not exists meta(key varchar primary key, value varchar)")
+    con.execute("insert or replace into meta values ('name_index', ?)", [str(NAME_INDEX_VERSION)])
+
+
+def _has_name_index(con: duckdb.DuckDBPyConnection) -> bool:
+    try:
+        row = con.execute("select value from meta where key = 'name_index'").fetchone()
+    except duckdb.Error:
+        return False
+    return row is not None and row[0] == str(NAME_INDEX_VERSION)
+
+
+def _upgrade_name_index(db_path: Path) -> bool:
+    """Add the name word tables to a database built before they existed (a few seconds, once). False if the file
+    cannot be written, e.g. because another program has it open."""
+    try:
+        con = duckdb.connect(str(db_path))
+    except duckdb.Error as e:
+        log.warning("%s has no name index and cannot be updated (%s); name search is slower until it is rebuilt",
+                    db_path, str(e).splitlines()[0])
+        return False
+    try:
+        log.info("adding the name index to %s ...", db_path)
+        _add_name_index(con)
+        con.execute("checkpoint")
+        return True
+    finally:
+        con.close()
+
+
+def _like_escape(text: str) -> str:
+    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 _MEMORY_LIMIT = re.compile(r"^\d+(\.\d+)?\s*(KB|MB|GB|TB|KiB|MiB|GiB|TiB)$", re.IGNORECASE)
 
 
@@ -276,6 +346,11 @@ class Database:
         timeout: float = 30.0,
     ):
         self._con = duckdb.connect(str(db_path), read_only=True)
+        self._name_index = _has_name_index(self._con)
+        if not self._name_index:
+            self._con.close()
+            self._name_index = _upgrade_name_index(Path(db_path))
+            self._con = duckdb.connect(str(db_path), read_only=True)
         apply_resource_limits(self._con, threads, memory_limit)
         self._slots = threading.BoundedSemaphore(max_concurrent)
         self._timeout = timeout
@@ -337,25 +412,17 @@ class Database:
             return {"authors": [], "truncated": False}
 
         if query.startswith("https://dblp.org"):
-            where, order, params = "DBLP = ?", "Name", [query]
+            rows = self._query("select NumericID, Name, DBLP, ORCID from authors where DBLP = ? order by Name limit ?",
+                               [query, limit + 1])
         else:
             if "," in query:
                 last, first = query.split(",", 1)
                 query = f"{first.strip()} {last.strip()}"
-            if matcher == "prefix":
-                where, order, params = "starts_with(upper(Name), upper(?))", "Name", [query]
-            elif matcher == "like":
-                where, order, params = "Name ilike ?", "Name", [query]
-            elif matcher == "accent":
-                where, order, params = f"starts_with(NameNorm, {_NORM.format('?')})", "Name", [query]
-            else:  # fuzzy
-                sim = f"jaro_winkler_similarity(NameNorm, {_NORM.format('?')})"
-                where, order, params = f"{sim} >= 0.9", f"{sim} desc, Name", [query, query]
-
-        rows = self._query(
-            f"select NumericID, Name, DBLP, ORCID from authors where {where} order by {order} limit ?",
-            params + [limit + 1],
-        )
+            if matcher == "like":
+                rows = self._query("select NumericID, Name, DBLP, ORCID from authors where Name ilike ? order by Name limit ?",
+                                   [query, limit + 1])
+            else:
+                rows = self._search_by_words(query, matcher, limit + 1)
         truncated = len(rows) > limit
         rows = rows[:limit]
         stats = self._author_stats([r[0] for r in rows])
@@ -372,16 +439,74 @@ class Database:
         ]
         return {"authors": authors, "truncated": truncated}
 
+    def _search_by_words(self, query: str, matcher: str, n: int) -> list[tuple]:
+        """Prefix / accent: every word of the query starts a word of the name ("Rei" finds "Guido Reina", "Guido Rei"
+        too). Fuzzy: each query word is compared with each name word; the average of the best matches must reach
+        FUZZY_THRESHOLD. With the name index only the rows of the query's longest word are read; without it (an old
+        database that could not be upgraded) the same conditions are checked on all authors."""
+        norm, low = self._query(f"select {_NORM.format('?')}, lower(?)", [query, query])[0]
+        norm_words = [w for w in _WORD_SPLIT.split(norm) if w]
+        low_words = [w for w in _WORD_SPLIT.split(low) if w]
+        if not norm_words:
+            return []
+        if len(low_words) != len(norm_words):  # strip_accents does not touch blanks and hyphens; just in case
+            low_words = norm_words
+        keys = [w for w in norm_words if not re.fullmatch(r"[0-9]+", w)]  # homonym numbers are not in name_words
+        indexed = self._name_index and bool(keys)
+
+        if matcher in ("prefix", "accent"):
+            column, words = ("lower(Name)", low_words) if matcher == "prefix" else ("NameNorm", norm_words)
+            conditions, params = [], []
+            for word in words:
+                e = _like_escape(word)
+                conditions.append(" or ".join([f"{column} like ? escape '\\'"] * 3))
+                params += [e + "%", "% " + e + "%", "%-" + e + "%"]
+            where = " and ".join(f"({c})" for c in conditions)
+            if indexed:
+                key = max(keys, key=len)
+                return self._query(
+                    f"""select AuthorID, any_value(Name) as n, any_value(DBLP), any_value(ORCID) from name_words
+                        where word >= ? and word < ? and {where} group by AuthorID order by n, AuthorID limit ?""",
+                    [key, key + "\U0010FFFF", *params, n])
+            return self._query(
+                f"select NumericID, Name, DBLP, ORCID from authors where {where} order by Name, NumericID limit ?",
+                params + [n])
+
+        def score(name: str) -> str:
+            return (f"list_avg(list_transform(?::VARCHAR[], q -> list_max(list_transform("
+                    f"regexp_split_to_array({name}, {_WORD_SPLIT_SQL}), w -> jaro_winkler_similarity(w, q)))))")
+
+        if indexed:
+            # a word of similarity >= 0.9 is at least half and at most twice as long as the query word
+            similar = " or ".join(["(len between ? and ? and jaro_winkler_similarity(word, ?) >= ?)"] * len(keys))
+            similar_params = [p for k in keys for p in ((len(k) + 1) // 2, 2 * len(k), k, FUZZY_THRESHOLD)]
+            words = [r[0] for r in self._query(f"select word from name_word_list where {similar}", similar_params)]
+            if not words:
+                return []
+            # the words as a list of constants: then DuckDB reads only the blocks of name_words that can hold them
+            # (with a subquery instead it reads all of them)
+            return self._query(
+                f"""select AuthorID, Name, DBLP, ORCID from (
+                        select AuthorID, any_value(Name) as Name, any_value(DBLP) as DBLP, any_value(ORCID) as ORCID,
+                               {score('any_value(NameNorm)')} as score
+                        from name_words where word in ({", ".join("?" * len(words))}) group by AuthorID)
+                    where score >= ? order by score desc, Name, AuthorID limit ?""",
+                [norm_words, *words, FUZZY_THRESHOLD, n])
+        return self._query(
+            f"""select NumericID, Name, DBLP, ORCID from (select *, {score('NameNorm')} as score from authors)
+                where score >= ? order by score desc, Name, NumericID limit ?""",
+            [norm_words, FUZZY_THRESHOLD, n])
+
     def _author_stats(self, ids: list[int]) -> dict[int, tuple[int, int | None]]:
         if not ids:
             return {}
-        rows = self._query(
-            """select pa.AuthorID, count(*), max(p.Year) from papers_authors pa
-               join papers p on p.NumericID = pa.PaperID
-               where pa.AuthorID in (select unnest(?)) group by pa.AuthorID""",
-            [ids],
-        )
-        return {r[0]: (r[1], r[2]) for r in rows}
+        if self._name_index:  # precomputed (see _add_name_index)
+            sql = "select AuthorID, paper_count, latest_year from author_stats where AuthorID in (select unnest(?))"
+        else:
+            sql = """select pa.AuthorID, count(*), max(p.Year) from papers_authors pa
+                     join papers p on p.NumericID = pa.PaperID
+                     where pa.AuthorID in (select unnest(?)) group by pa.AuthorID"""
+        return {r[0]: (r[1], r[2]) for r in self._query(sql, [ids])}
 
     def recent_papers(self, author_id: int, limit: int = 3) -> list[dict]:
         """Latest papers of an author; helps telling homonyms apart."""

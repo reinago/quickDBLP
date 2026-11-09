@@ -116,15 +116,21 @@ async function api(path, body) {
   return data;
 }
 
-// Run an async action with the button disabled and errors shown in the banner.
+// Run an async action with the button disabled (and spinning) and errors shown in the banner.
 async function busy(button, action) {
   const label = button.textContent;
   button.disabled = true;
+  button.classList.add("working");
   showError("");
   try { return await action(); }
   catch (e) { showError(e.message); }
-  finally { button.disabled = false; button.textContent = label; }
+  finally { button.disabled = false; button.classList.remove("working"); button.textContent = label; }
 }
+
+// Busy indicators: results are cleared as soon as a query starts, and this stands in their place until the answer is in
+// (the server may be slow).
+const spinner = () => el("span", { class: "spinner", "aria-hidden": "true" });
+const loadingNote = (text) => el("div", { class: "loading", role: "status" }, spinner(), text);
 
 // ---------- state ----------
 
@@ -141,7 +147,10 @@ const state = {
   hasAuthors: false,
   tab: "conflicts",         // "conflicts" | "reviewers"
 };
-let refreshCounter = 0;     // drop responses of outdated requests
+// drop responses of outdated requests
+let refreshCounter = 0;
+let reviewerCounter = 0;
+let searchCounter = 0;
 
 // ---------- meta ----------
 
@@ -205,7 +214,7 @@ $("#guess-btn").addEventListener("click", (event) => busy(event.target, async ()
   $("#author-input").value = authors.join("\n");
   growAuthors();
   closeGuessWindow();
-  await searchAuthors(event.target);
+  await searchAuthors($("#author-search"));
 }));
 
 $("#author-search").addEventListener("click", (event) => searchAuthors(event.target));
@@ -213,9 +222,21 @@ $("#author-search").addEventListener("click", (event) => searchAuthors(event.tar
 function searchAuthors(button) {
   const queries = splitList($("#author-input").value);
   if (!queries.length) return showError("Enter at least one author name or DBLP URL.");
+  // the old candidates, the selection and everything computed from it go away at once
+  const ticket = ++searchCounter;
+  state.selected.clear();
+  $("#author-results").replaceChildren(loadingNote("Searching DBLP…"));
+  updateSelection();
   return busy(button, async () => {
-    const { results } = await api("/api/authors/search", { queries, matcher: $("#author-matcher").value });
-    state.selected.clear();
+    let results;
+    try {
+      ({ results } = await api("/api/authors/search", { queries, matcher: $("#author-matcher").value }));
+    } catch (e) {
+      if (ticket !== searchCounter) return;
+      $("#author-results").replaceChildren();
+      throw e;
+    }
+    if (ticket !== searchCounter) return;
     $("#author-results").replaceChildren(...results.map(renderGroup));
     updateSelection();
   });
@@ -253,12 +274,19 @@ function renderGroup(result) {
 }
 
 async function toggleRecent(button, author, container) {
-  if (container.childNodes.length) return container.replaceChildren();
+  if (container.childNodes.length) return container.replaceChildren();  // also cancels a list that is still loading
+  const note = loadingNote("Loading…");
+  container.replaceChildren(note);
   try {
     const { papers } = await api(`/api/authors/${author.id}/recent?limit=3`);
+    if (!container.contains(note)) return;
     container.replaceChildren(el("ul", {}, papers.map((p) =>
       el("li", {}, `${p.year}: `, link(p.dblp, p.title)))));
-  } catch (e) { showError(e.message); }
+  } catch (e) {
+    if (!container.contains(note)) return;
+    container.replaceChildren();
+    showError(e.message);
+  }
 }
 
 function updateSelection() {
@@ -273,8 +301,8 @@ function updateSelection() {
 
 const TABS = ["conflicts", "reviewers"];
 
-function setTabLabel(tab, number, text) {
-  $(`#tab-${tab}`).replaceChildren(el("span", { class: "step", text: String(number) }), " " + text);
+function setTabLabel(tab, number, text, loading = false) {
+  $(`#tab-${tab}`).replaceChildren(el("span", { class: "step", text: String(number) }), " " + text, ...(loading ? [spinner()] : []));
 }
 
 function applyTabs() {
@@ -325,22 +353,47 @@ function updateYearsLabel() {
     : `${plural(years, "year")} (since ${new Date().getFullYear() - years})`;
 }
 
-const refresh = debounce(async () => {
+// The selection or a filter changed: the conflicts (and a reviewer check) are cleared right away, the query itself waits
+// until the input settles (e.g. while the years slider moves).
+function refresh() {
   updateYearsLabel();
   const ticket = ++refreshCounter;
-  const hasAuthors = state.selected.size > 0;
-  state.hasAuthors = hasAuthors;
+  ++reviewerCounter;  // a reviewer check still running is outdated as well
+  state.conflicts = null;
+  state.hasAuthors = state.selected.size > 0;
   applyTabs();
-  if (!hasAuthors) { state.conflicts = null; return; }
+  if (!state.hasAuthors) return;
+  showConflictsLoading();
+  if (state.reviewersChecked) showReviewersLoading();
+  fetchConflicts(ticket);
+}
+
+const fetchConflicts = debounce(async (ticket) => {
+  if (ticket !== refreshCounter) return;
   try {
-    const params = filterParams();
-    const conflicts = await api("/api/conflicts", params);
+    const conflicts = await api("/api/conflicts", filterParams());
     if (ticket !== refreshCounter) return;
     state.conflicts = conflicts;
     renderConflicts();
-    if (state.reviewersChecked) await runReviewerCheck(ticket);
-  } catch (e) { showError(e.message); }
+  } catch (e) {
+    if (ticket !== refreshCounter) return;
+    $("#conflict-status").replaceChildren();
+    setTabLabel("conflicts", 2, "Conflicts");
+    $("#conflict-summary").textContent = "The conflicts could not be computed.";
+    if (state.reviewersChecked) showReviewersFailed();
+    return showError(e.message);
+  }
+  if (state.reviewersChecked) {
+    try { await runReviewerCheck(); } catch (e) { showError(e.message); }
+  }
 }, 250);
+
+function showConflictsLoading() {
+  setTabLabel("conflicts", 2, "Conflicts", true);
+  $("#conflict-summary").textContent = "";
+  $("#conflict-table").replaceChildren();
+  $("#conflict-status").replaceChildren(loadingNote("Computing the conflicts…"));
+}
 
 function conflictText(entry) {
   return [entry.name, entry.dblp, entry.orcid, ...entry.papers.map((p) => p.title)].join("\n").toLowerCase();
@@ -370,6 +423,7 @@ function renderConflicts() {
     return (x < y ? -1 : x > y ? 1 : 0) * state.sort.dir || a.name.localeCompare(b.name);
   });
 
+  $("#conflict-status").replaceChildren();
   setTabLabel("conflicts", 2, `Conflicts (${state.conflicts.coauthors.length.toLocaleString()})`);
   const papers = rows.reduce((n, e) => n + e.paper_count, 0);
   const since = state.conflicts.since_year;
@@ -444,11 +498,33 @@ const STATUS_LABEL = {
   conflict: "Conflict", no_conflict: "No conflict found", ambiguous: "Several profiles match", not_found: "Not found in DBLP",
 };
 
-async function runReviewerCheck(ticket = refreshCounter) {
-  const { reviewers } = await api("/api/reviewers/check", {
-    ...filterParams(), reviewers: state.reviewerQueries, matcher: $("#reviewer-matcher").value,
-  });
-  if (ticket !== refreshCounter) return;
+function showReviewersLoading() {
+  setTabLabel("reviewers", 3, "Check reviewers", true);
+  $("#reviewer-summary").textContent = "";
+  $("#reviewer-results").replaceChildren(loadingNote("Checking the reviewers…"));
+}
+
+function showReviewersFailed() {
+  setTabLabel("reviewers", 3, "Check reviewers");
+  $("#reviewer-summary").textContent = "The reviewers could not be checked.";
+  $("#reviewer-results").replaceChildren();
+}
+
+// Errors are thrown (the caller shows them), unless a newer check or filter change has made this one outdated.
+async function runReviewerCheck() {
+  const ticket = ++reviewerCounter;
+  showReviewersLoading();
+  let reviewers;
+  try {
+    ({ reviewers } = await api("/api/reviewers/check", {
+      ...filterParams(), reviewers: state.reviewerQueries, matcher: $("#reviewer-matcher").value,
+    }));
+  } catch (e) {
+    if (ticket !== reviewerCounter) return;
+    showReviewersFailed();
+    throw e;
+  }
+  if (ticket !== reviewerCounter) return;
   const count = (status) => reviewers.filter((r) => r.status === status).length;
   setTabLabel("reviewers", 3, `Check reviewers (${count("conflict")} of ${reviewers.length} in conflict)`);
   $("#reviewer-summary").textContent =

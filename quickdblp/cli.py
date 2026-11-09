@@ -31,7 +31,8 @@ def app_from_args(args):
     """The web app for the `serve` options: a self-updating data directory, or (with --db / --snapshot-dir) a fixed database."""
     from .app import create_app
 
-    common = dict(threads=args.threads, memory_limit=args.memory_limit, max_concurrent=args.max_concurrent, timeout=args.timeout)
+    common = dict(threads=args.threads, memory_limit=args.memory_limit, max_concurrent=args.max_concurrent, timeout=args.timeout,
+                  slow_down=args.slow_down)
     if args.db is not None or args.snapshot_dir is not None:
         return create_app(args.db or DEFAULT_DB, snapshot_dir=args.snapshot_dir or DEFAULT_SNAPSHOT_DIR, **common)
     adopt_existing_database(args.data_dir)
@@ -68,6 +69,9 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--memory-limit", help="DuckDB memory limit, e.g. 4GB")
     serve.add_argument("--max-concurrent", type=int, default=8, help="max simultaneously running queries")
     serve.add_argument("--timeout", type=float, default=30.0, help="per-query timeout in seconds")
+    serve.add_argument("--slow-down", type=float, default=0.0, metavar="SECONDS",
+                       help="testing only: delay every answer about the data (search, conflicts, reviewer check, ...) by "
+                            "this many seconds, to see how the page behaves on a slow server")
 
     refresh = sub.add_parser("refresh", help="update the data in a data directory now (like the page's update button)")
     refresh.add_argument("--data-dir", default=os.environ.get("QUICKDBLP_DATA_DIR"), required=not os.environ.get("QUICKDBLP_DATA_DIR"))
